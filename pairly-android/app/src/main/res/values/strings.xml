@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Pairly</string>
+    <string name="no_devices_title">No devices yet</string>
+    <string name="no_devices_body">Pairing with your PC arrives in Phase 3.</string>
+</resources>

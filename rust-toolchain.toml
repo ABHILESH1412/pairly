@@ -1,0 +1,6 @@
+# Honoured once rustup is installed (Phase 0). The Arch `rust` package ignores this file.
+[toolchain]
+channel = "stable"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android"]

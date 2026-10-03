@@ -1,0 +1,12 @@
+[package]
+name = "pairly-proto"
+description = "Pairly packet types, CBOR codec and framing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,12 @@
+[package]
+name = "pairly-crypto"
+description = "Pairly identity keys, Noise handshakes and pairing SAS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

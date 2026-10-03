@@ -1,0 +1,20 @@
+[package]
+name = "pairly-ffi"
+description = "UniFFI bindings exposing the Pairly node to Kotlin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib"]
+name = "pairly_ffi"
+
+[dependencies]
+pairly-core.workspace = true
+pairly-plugins.workspace = true
+pairly-transport-lan.workspace = true
+pairly-transport-relay.workspace = true

@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+
+[workspace.dependencies]
+# Shared core (sibling workspace)
+pairly-proto = { path = "../pairly-core/crates/pairly-proto" }
+pairly-crypto = { path = "../pairly-core/crates/pairly-crypto" }
+pairly-core = { path = "../pairly-core/crates/pairly-core" }
+pairly-plugins = { path = "../pairly-core/crates/pairly-plugins" }
+pairly-transport-lan = { path = "../pairly-core/crates/pairly-transport-lan" }
+pairly-transport-relay = { path = "../pairly-core/crates/pairly-transport-relay" }
+# Linux crates
+pairly-dbus = { path = "crates/pairly-dbus" }
+pairly-transport-bt = { path = "crates/pairly-transport-bt" }
+# Third party
+relm4 = { version = "0.11", features = ["libadwaita", "gnome_50"] }
+
+# Keep in sync with ../pairly-core/Cargo.toml
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

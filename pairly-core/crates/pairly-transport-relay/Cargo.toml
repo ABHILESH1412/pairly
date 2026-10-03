@@ -1,0 +1,13 @@
+[package]
+name = "pairly-transport-relay"
+description = "Pairly internet transport via the blind relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pairly-core.workspace = true

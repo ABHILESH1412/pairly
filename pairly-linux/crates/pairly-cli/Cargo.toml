@@ -1,0 +1,17 @@
+[package]
+name = "pairly-cli"
+description = "Pairly command-line client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pairly"
+path = "src/main.rs"
+
+[dependencies]
+pairly-dbus.workspace = true

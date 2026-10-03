@@ -1,0 +1,18 @@
+[package]
+name = "pairlyd"
+description = "Pairly daemon: runs the node, Linux platform adapters, tray and D-Bus API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pairly-core.workspace = true
+pairly-plugins.workspace = true
+pairly-transport-lan.workspace = true
+pairly-transport-relay.workspace = true
+pairly-transport-bt.workspace = true
+pairly-dbus.workspace = true
