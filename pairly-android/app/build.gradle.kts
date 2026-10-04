@@ -20,9 +20,9 @@ android {
 
     // Release signing comes from keystore.properties next to this project (never committed):
     //   storeFile=/path/to/pairly-release.jks
-    //   storePassword=…
     //   keyAlias=pairly
-    //   keyPassword=…
+    // The passwords come from PAIRLY_STORE_PASSWORD / PAIRLY_KEY_PASSWORD (scripts/release.sh
+    // asks for them), or storePassword= / keyPassword= lines in the file if you prefer.
     // Without it, release builds are signed with the debug key: fine for testing on your own
     // phone, never for publishing (scripts/release.sh refuses).
     val signing = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { file ->
@@ -32,9 +32,11 @@ android {
         if (signing != null) {
             create("release") {
                 storeFile = file(signing.getProperty("storeFile"))
-                storePassword = signing.getProperty("storePassword")
+                storePassword = signing.getProperty("storePassword") ?: System.getenv("PAIRLY_STORE_PASSWORD")
                 keyAlias = signing.getProperty("keyAlias")
                 keyPassword = signing.getProperty("keyPassword")
+                    ?: System.getenv("PAIRLY_KEY_PASSWORD")
+                    ?: storePassword
             }
         }
     }

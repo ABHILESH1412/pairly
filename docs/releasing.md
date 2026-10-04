@@ -33,14 +33,16 @@ uninstall it and pair again.
    ```
 
 2. Tell the build where it is. Create `pairly-android/keystore.properties`; it's in
-   `.gitignore`, so it is never committed:
+   `.gitignore`, so it is never committed. Leave the password out: `scripts/release.sh` asks
+   for it each time, and it is never saved:
 
    ```properties
    storeFile=/home/three/pairly-release.jks
-   storePassword=YOUR_PASSWORD
    keyAlias=pairly
-   keyPassword=YOUR_PASSWORD
    ```
+
+   (You *can* add `storePassword=…` and `keyPassword=…` lines to skip the question. Then run
+   `chmod 600 pairly-android/keystore.properties`.)
 
 3. **Back up** `~/pairly-release.jks` somewhere off this laptop, such as an encrypted USB stick
    or your password manager's file storage.

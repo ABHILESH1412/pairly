@@ -39,6 +39,14 @@ git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag doesn't e
 [ -f pairly-android/keystore.properties ] ||
   die "pairly-android/keystore.properties is missing (see docs/releasing.md, step 2)"
 
+# Ask for the key's password unless the file or the environment has it (it isn't echoed or
+# stored; Gradle reads it from the environment of this run only).
+if ! grep -q '^storePassword=' pairly-android/keystore.properties && [ -z "${PAIRLY_STORE_PASSWORD:-}" ]; then
+  read -rsp "Release key password: " PAIRLY_STORE_PASSWORD
+  echo
+  export PAIRLY_STORE_PASSWORD
+fi
+
 mkdir -p "$out/aur"
 (cd pairly-android && ./gradlew --quiet clean assembleRelease)
 apk="$out/pairly-$version.apk"
