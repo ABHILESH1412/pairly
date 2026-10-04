@@ -1,5 +1,111 @@
 <resources>
     <string name="app_name">Pairly</string>
-    <string name="no_devices_title">No devices yet</string>
-    <string name="no_devices_body">Pairing with your PC arrives in Phase 3.</string>
+
+    <string name="starting">Starting…</string>
+    <string name="start_failed">Couldn\'t start: %1$s</string>
+    <string name="section_paired">Your devices</string>
+    <string name="section_available">Available on this network</string>
+    <string name="searching">Looking for devices on this network…</string>
+    <string name="searching_hint">Make sure Pairly is running on your PC and both are on the same network, or tap Scan code.</string>
+    <string name="available_to_pair">Available to pair</string>
+    <string name="action_pair">Pair</string>
+    <string name="action_ping">Ping</string>
+    <string name="action_unpair">Unpair</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_done">Done</string>
+    <string name="status_offline">Offline</string>
+    <string name="status_connected">Connected · %1$s</string>
+    <string name="status_connected_rtt">Connected · %1$s · %2$d ms</string>
+    <string name="link_lan">Local network</string>
+    <string name="link_bluetooth">Bluetooth</string>
+    <string name="link_relay">Internet</string>
+
+    <string name="pair_title">Pair with %1$s?</string>
+    <string name="pair_check">Check that %1$s shows the same code:</string>
+    <string name="pair_incoming">%1$s wants to pair with this phone.</string>
+    <string name="pair_confirm">Codes match</string>
+    <string name="unpair_title">Unpair %1$s?</string>
+    <string name="unpair_body">You\'ll need to pair again to reconnect.</string>
+
+    <string name="action_scan">Scan code</string>
+    <string name="scan_title">Scan pairing code</string>
+    <string name="scan_hint">On your PC, open Pairly and click + to show a code. Point the camera at it.</string>
+    <string name="scan_no_permission">Pairly needs the camera to scan the pairing code.</string>
+    <string name="scan_grant">Allow camera</string>
+    <string name="pairing_in_progress">Pairing…</string>
+
+    <string name="channel_mirrors">From your devices</string>
+    <string name="channel_mirrors_description">Notifications from your paired PCs</string>
+    <string name="mirror_reply">Reply</string>
+    <string name="notif_access_title">Send notifications to your PC</string>
+    <string name="notif_access_body">Allow Pairly to read notifications so they show up on your paired devices. They\'re sent end-to-end encrypted and only to devices you paired.</string>
+    <string name="notif_access_grant">Allow access</string>
+    <string name="notif_sending">Notifications go to your PC</string>
+    <string name="notif_choose_apps">Choose apps</string>
+    <string name="apps_title">Apps to send</string>
+    <string name="apps_empty">Apps appear here after they post a notification.</string>
+
+    <string name="channel_findmy">Find my phone</string>
+    <string name="ring_title">Your phone is being found</string>
+    <string name="ring_body">%1$s is ringing this phone. Tap to stop.</string>
+    <string name="ring_stop">Stop</string>
+    <string name="tile_clipboard">Send clipboard</string>
+    <string name="action_send_clipboard">Send clipboard</string>
+    <string name="action_ring">Ring</string>
+    <string name="action_stop_ring">Stop ringing</string>
+    <string name="action_more">More</string>
+    <string name="clipboard_received">Copied from %1$s</string>
+    <string name="clipboard_sent">Clipboard sent to %1$s</string>
+    <string name="clipboard_empty">Your clipboard is empty</string>
+    <string name="clipboard_no_devices">No device is connected</string>
+    <string name="battery_level">Battery %1$d%%</string>
+    <string name="battery_charging">Battery %1$d%% · charging</string>
+
+    <string name="action_send_files">Send files</string>
+    <string name="channel_shared">Files and links</string>
+    <string name="channel_transfers">File transfers</string>
+    <string name="share_offer_title">%1$s wants to send you a file</string>
+    <string name="share_offer_body">%1$s (%2$s)</string>
+    <string name="share_accept">Accept</string>
+    <string name="share_decline">Decline</string>
+    <string name="share_open">Open</string>
+    <string name="share_receiving">Receiving %1$s</string>
+    <string name="share_sending">Sending %1$s</string>
+    <string name="share_waiting">Waiting for %1$s to accept</string>
+    <string name="share_waiting_short">Waiting for the other device to accept</string>
+    <string name="share_progress">%1$s of %2$s · %3$s</string>
+    <string name="share_progress_in">Receiving · %1$s of %2$s</string>
+    <string name="share_progress_out">Sending · %1$s of %2$s</string>
+    <string name="share_wants_to_send">%1$s · wants to send this</string>
+    <string name="share_received">Received %1$s</string>
+    <string name="share_received_body">From %1$s · %2$s · tap to open</string>
+    <string name="share_sent">Sent %1$s to %2$s</string>
+    <string name="share_receive_failed">Couldn\'t receive %1$s</string>
+    <string name="share_send_failed">Couldn\'t send %1$s to %2$s</string>
+    <string name="share_cant_send">Couldn\'t send: %1$s</string>
+    <string name="share_cant_receive">Couldn\'t receive: %1$s</string>
+    <string name="share_link_from">Link from %1$s</string>
+    <string name="share_text_from">Text from %1$s copied</string>
+    <string name="share_link_sent">Link sent to %1$s</string>
+    <string name="share_text_sent">Text sent to %1$s</string>
+    <string name="share_link_title">Send link to</string>
+    <string name="share_text_title">Send text to</string>
+    <string name="share_no_devices">No device is connected. Open Pairly on your PC, on the same network as this phone.</string>
+    <string name="share_tap_to_send">Tap to send</string>
+    <string name="share_ask_setting">Ask before receiving files</string>
+    <string name="share_ask_setting_body">Otherwise files from your paired devices are saved to Download/Pairly right away</string>
+    <plurals name="share_files_title">
+        <item quantity="one">Send %1$d file to</item>
+        <item quantity="other">Send %1$d files to</item>
+    </plurals>
+    <plurals name="share_sending">
+        <item quantity="one">Sending %1$d file to %2$s</item>
+        <item quantity="other">Sending %1$d files to %2$s</item>
+    </plurals>
+
+    <string name="channel_service">Connection status</string>
+    <string name="channel_pings">Pings</string>
+    <string name="service_waiting">Waiting for your devices</string>
+    <string name="service_connected">Connected to %1$s</string>
+    <string name="ping_from">Ping from %1$s</string>
 </resources>

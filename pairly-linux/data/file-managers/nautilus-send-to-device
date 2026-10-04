@@ -1,0 +1,4 @@
+#!/bin/sh
+# Nautilus script: right-click → Scripts → Send to Device. Installed by `make install-user`.
+# Nautilus passes the selected local files as arguments.
+exec pairly-gtk --send "$@"

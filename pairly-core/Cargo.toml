@@ -15,6 +15,38 @@ pairly-core = { path = "crates/pairly-core" }
 pairly-plugins = { path = "crates/pairly-plugins" }
 pairly-transport-lan = { path = "crates/pairly-transport-lan" }
 pairly-transport-relay = { path = "crates/pairly-transport-relay" }
+pairly-ffi = { path = "crates/pairly-ffi" }
+pairly-relay = { path = "crates/pairly-relay" }
+
+# Third party
+anyhow = "1"
+async-trait = "0.1"
+blake2 = "0.11"
+ciborium = "0.2"
+clap = { version = "4", features = ["derive", "env"] }
+data-encoding = "2"
+futures = "0.3"
+if-addrs = "0.15"
+mdns-sd = "0.21"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+paranoid-android = "0.2"
+rand = "0.10"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+snow = "0.10"
+uniffi = "0.32"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "io-util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize = { version = "1", features = ["derive"] }
+# Dev only
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

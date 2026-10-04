@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=Pairly
+GenericName=Phone Connection
+Comment=Connect your phone and PC: notifications, files, clipboard
+Exec=pairly-gtk
+Icon=dev.pairly.Pairly
+Terminal=false
+StartupNotify=true
+Categories=GTK;Network;FileTransfer;
+Keywords=phone;android;notifications;clipboard;sync;kdeconnect;
+Actions=send;pair;
+
+[Desktop Action send]
+Name=Send Files
+Exec=pairly-gtk --send
+
+[Desktop Action pair]
+Name=Pair a New Device
+Exec=pairly-gtk --pair

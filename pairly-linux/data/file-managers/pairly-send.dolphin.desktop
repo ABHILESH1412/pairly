@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Service
+MimeType=all/allfiles;
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+Actions=send
+X-KDE-Priority=TopLevel
+
+[Desktop Action send]
+Name=Send to Device (Pairly)
+Icon=dev.pairly.Pairly
+Exec=pairly-gtk --send %F

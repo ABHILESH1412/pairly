@@ -1,0 +1,7 @@
+[Nemo Action]
+Name=Send to Device (Pairly)
+Comment=Send the selected files to a paired device
+Exec=pairly-gtk --send %F
+Icon-Name=dev.pairly.Pairly
+Selection=notnone
+Extensions=nodirs;

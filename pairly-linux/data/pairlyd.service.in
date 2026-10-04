@@ -1,0 +1,13 @@
+[Unit]
+Description=Pairly daemon (phone to PC link)
+After=dbus.socket
+
+[Service]
+Type=dbus
+BusName=dev.pairly.Daemon
+ExecStart=@bindir@/pairlyd
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

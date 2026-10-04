@@ -11,3 +11,11 @@ workspace = true
 
 [dependencies]
 pairly-core.workspace = true
+async-trait.workspace = true
+data-encoding.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+rustls.workspace = true
+tokio.workspace = true
+tracing.workspace = true

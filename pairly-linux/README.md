@@ -1,7 +1,102 @@
 # pairly-linux
 
-Linux app: `pairlyd` daemon (systemd user service), `pairly-gtk` (GTK4 + libadwaita UI),
-`pairly` CLI, D-Bus interface crate, and the Bluetooth (bluer) transport.
-Depends on `../pairly-core` by path.
+Linux app: `pairlyd` daemon, `pairly-gtk` (GTK4 + libadwaita UI, Phase 4), the `pairly` CLI,
+the D-Bus interface crate (`dev.pairly.Daemon1`) and the Bluetooth transport (Phase 9).
+Depends on `../pairly-core` by path. See `../plan.md` section 9.
 
-See `../plan.md` section 9.
+## Install (current user, no root)
+
+```sh
+make install-user      # release build, installs to ~/.local, enables the pairlyd user service
+make uninstall-user    # removes it again; pairings in ~/.local/share/pairly are kept
+```
+
+This installs `pairlyd`, `pairly` and `pairly-gtk`, the app launcher and icons, a systemd
+user unit (`pairlyd.service`, started at login) and a D-Bus activation file, so any client
+starts the daemon on demand. The build uses 4 parallel jobs (`JOBS=8` to change); each
+rustc can need 1–2 GB of RAM.
+
+Open **Pairly** from your launcher, or the tray icon. Click **+** to show a QR code and scan it
+with the Android app's **Scan code** button.
+
+## Try it from the source tree
+
+```sh
+cargo build
+./target/debug/pairlyd                 # terminal 1 (logs: PAIRLY_LOG=debug)
+./target/debug/pairly devices          # terminal 2
+./target/debug/pairly pair <id|name>   # compare the code on both devices
+./target/debug/pairly ping <id|name> "hello"
+./target/debug/pairly listen           # answer incoming pairing requests, show pings
+./target/debug/pairly send <dev> a.pdf b.jpg   # with progress; --no-wait to return at once
+./target/debug/pairly url <dev> https://example.com   # opens on the phone (tap the notification)
+./target/debug/pairly text <dev> "some text"          # lands on the phone's clipboard
+./target/debug/pairly transfers        # what's in flight
+```
+
+## Sending files
+
+- **GTK app:** drop files on the window or on a device in the sidebar, or use **Send…** on the
+  device page. **Link or Text** sends a link (opened there) or text (copied there).
+- **Nautilus:** right-click → **Scripts → Send to Device**. Dolphin and Nemo get a
+  "Send to Device (Pairly)" entry too. Thunar: add a custom action running
+  `pairly-gtk --send %F`.
+- **Tray:** a device's **Send Files…**. **Launcher:** Pairly's **Send Files** action.
+- **yazi** (or any terminal file manager): `pairly-gtk --send <files>` picks the device for
+  you; for example in `~/.config/yazi/keymap.toml`:
+  `{ on = "S", run = 'shell -- pairly-gtk --send "$@"', desc = "Send to phone" }`.
+
+Received files go to your download folder (`XDG_DOWNLOAD_DIR`), written as `name.part` and
+renamed once the SHA-256 checks out. The notification has **Open** and **Show in Folder**.
+Links from the phone open in your browser; text goes to the clipboard.
+
+Data lives in `$XDG_DATA_HOME/pairly` (`identity.key`, `registry.db`). Settings are in
+`$XDG_CONFIG_HOME/pairly/config.toml`; every key is optional:
+
+```toml
+name = "My Laptop"
+device_type = "laptop"
+bus_name = "dev.pairly.Daemon"
+tray = true
+[lan]
+port = 47100
+mdns = true
+enabled = true              # false: no LAN at all, only the relay
+
+[relay]
+address = "pairly-relay://TOKEN@host:47200/PIN"   # see pairly-core/crates/pairly-relay/README.md
+
+[clipboard]
+auto = true                 # send every copy to connected devices (false: only on request)
+
+[share]
+download_dir = "~/Downloads/Pairly"   # default: your XDG download folder
+auto_accept = true          # false: Accept/Decline buttons on a notification
+open_urls = true            # false: a notification with an Open button instead
+
+[notifications]
+send = true                 # forward this PC's notifications to your phone
+show = true                 # show your phone's notifications here
+ignore_apps = ["Spotify"]   # app names never forwarded
+reply = "auto"              # "inline", "dialog" or "auto"
+```
+
+Replies to phone notifications use the notification server's inline reply field when it has
+one. swaync advertises inline replies even with `"notification-inline-replies": false` in its
+config, so pairlyd reads that setting and uses a small reply window instead. Change it to
+`true` (then `swaync-client -R` and `systemctl --user restart pairlyd`) for the inline field.
+
+### Firewall
+
+Phones find the PC with mDNS and connect over UDP 47100. With firewalld (default on
+EndeavourOS/Fedora), open both in the zone of your network interface:
+
+```sh
+sudo firewall-cmd --permanent --zone=public --add-service=mdns
+sudo firewall-cmd --permanent --zone=public --add-port=47100/udp
+sudo firewall-cmd --reload
+```
+
+To run a second daemon on the same machine, give it its own `data_dir`, `bus_name` and
+`lan.port`, start it with `pairlyd --config <file>`, and talk to it with
+`pairly --bus-name <name> ...`.

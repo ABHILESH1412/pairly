@@ -10,4 +10,16 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
+if-addrs.workspace = true
 pairly-core.workspace = true
+mdns-sd.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+pairly-plugins.workspace = true

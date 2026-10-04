@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=dev.pairly.Daemon
+Exec=@bindir@/pairlyd
+SystemdService=pairlyd.service

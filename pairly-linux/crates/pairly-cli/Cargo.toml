@@ -15,3 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 pairly-dbus.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+zbus.workspace = true

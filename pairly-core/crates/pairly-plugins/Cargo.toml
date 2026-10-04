@@ -12,3 +12,13 @@ workspace = true
 [dependencies]
 pairly-core.workspace = true
 pairly-proto.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+tracing.workspace = true
+serde_bytes.workspace = true
+rand.workspace = true
+ring.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile.workspace = true

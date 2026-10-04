@@ -1,0 +1,23 @@
+# docker compose up -d --build    (run in this directory; settings come from .env)
+services:
+  relay:
+    build:
+      context: ../../..
+      dockerfile: crates/pairly-relay/deploy/Dockerfile
+    image: pairly-relay
+    restart: unless-stopped
+    ports:
+      - "47200:47200/udp"
+    environment:
+      PAIRLY_RELAY_TOKENS: ${PAIRLY_RELAY_TOKENS:?set PAIRLY_RELAY_TOKENS in .env}
+      PAIRLY_RELAY_PUBLIC_HOST: ${PAIRLY_RELAY_PUBLIC_HOST:-}
+      PAIRLY_RELAY_RATE_LIMIT_MBPS: ${PAIRLY_RELAY_RATE_LIMIT_MBPS:-0}
+    volumes:
+      # The certificate lives here. Keep it: a new one changes the address's pin.
+      - relay-data:/var/lib/pairly-relay
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  relay-data:

@@ -12,3 +12,7 @@ workspace = true
 [dependencies]
 pairly-dbus.workspace = true
 relm4.workspace = true
+futures-util.workspace = true
+qrcode.workspace = true
+tokio.workspace = true
+zbus.workspace = true

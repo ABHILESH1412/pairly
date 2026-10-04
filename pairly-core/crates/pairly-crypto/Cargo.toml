@@ -10,3 +10,14 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+blake2.workspace = true
+data-encoding.workspace = true
+rand.workspace = true
+serde.workspace = true
+snow.workspace = true
+thiserror.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

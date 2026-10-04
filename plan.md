@@ -273,30 +273,42 @@ struct Envelope {
     ty: String,            // "notification.posted", "clipboard.set", …
     body: ciborium::Value, // type-specific payload
 }
-// Control packets: "ack" { ids: [u64] }, "ping" { t }, "pong" { t }, "identity" {…}, "bye" {}
+// Session control: "ack" { ids: [u64] }, "keepalive" { t }, "keepalive.ack" { t }
+// Pre-session (id 0, never acked): "identity" {…}, "pair.commit", "pair.nonce", "pair.reveal", "pair.confirm"
 ```
+
+`ty` must be lowercase ASCII (`a-z`, `0-9`, `.`, `_`), at most 64 bytes. An envelope is at most ~1 MiB, and
+decoding untrusted input uses a CBOR nesting limit of 32.
 
 ### 5.3 Session rules
 
 - **Acks:** packets with `ack: true` stay in the outbound queue until the peer acks them. Acks are batched
   every 50 ms or 32 packets.
 - **Migration:** when the transport manager swaps channels, every unacked packet is resent on the new channel.
-  The receiver drops duplicates with a sliding window of recent IDs, kept per session and persisted.
+  The receiver drops duplicates with a sliding window of the last 4096 IDs.
+- **Restarts:** each process run picks a random `session_nonce` (sent in `identity`). A changed nonce tells the
+  peer to reset its dedup window, since the restarted side's IDs start over at 1. Delivery is
+  *at least once*: if a device crashes before acking, the sender resends after reconnect, so plugins must
+  tolerate a repeated packet (for example, notification IDs are idempotent). A clean shutdown flushes
+  pending acks first, so this only happens after a crash.
 - **Priorities:** `Control > Interactive (notifications, clipboard, input) > Bulk (file chunks)`. The
   scheduler sends interactive packets between file chunks, so a 2 GB transfer never delays a notification.
-- **Keepalive:** a ping every 15 s on LAN and BT, and every 60–120 s on the relay. Three missed pongs mark the
-  channel dead.
+- **Keepalive:** a `keepalive` every 15 s on LAN and BT, and every 60–120 s on the relay. The echoed
+  `keepalive.ack` gives the RTT. 45 s without any inbound traffic marks the channel dead.
 
 ### 5.4 Identity / capability exchange (first packet after the handshake)
 
 ```cbor
 identity {
-  device_id, name, device_type: "desktop"|"phone"|"tablet"|"laptop",
-  protocol_version: 1, app_version,
-  incoming: ["notification.posted", …], outgoing: [ … ],
-  transports: { lan: true, bt: { addr }, relay: { url } }
+  name, device_type: "desktop"|"phone"|"tablet"|"laptop",
+  app_version, session_nonce,
+  incoming: ["notification.posted", …], outgoing: [ … ]
+  // later phases add: transports: { bt: { addr }, relay: { url } }
 }
 ```
+
+There is no `device_id` field. The receiver derives the ID from the peer's Noise static key, which the
+handshake has already authenticated, so a peer cannot claim someone else's ID.
 
 Each side enables a plugin only if the peer supports the matching types, as KDE Connect does.
 
@@ -349,13 +361,29 @@ There are two flows, and both end with each device pinning the other's static pu
    - The phone already knows the PC's key from the QR, and the PSK proves the PC showed that QR, so a
      man-in-the-middle is not possible. No code needs to be compared.
 2. **Code-comparison flow (LAN discovery, no camera)**
-   - The devices run **`Noise_XX`**. Both screens then show a 6-digit **SAS** derived from the handshake hash.
-   - The user checks that the codes match and taps *Accept* on both devices.
-   - The pairing is stored only after both devices accept.
+   - The devices run **`Noise_XX`**, then a commit/reveal exchange inside the encrypted channel (the same idea as
+     Bluetooth's numeric comparison). `h` is the handshake hash.
+     1. responder → initiator: `pair.commit { BLAKE2s("pairly-sas-commit" ‖ h ‖ n_r) }`
+     2. initiator → responder: `pair.nonce { n_i }`
+     3. responder → initiator: `pair.reveal { n_r }`, and the initiator checks the commitment.
+   - Both screens show `SAS = BLAKE2s("pairly-sas-code" ‖ h ‖ n_i ‖ n_r) mod 10^6` as `123 456`.
+   - The user checks that the codes match and taps *Accept* on both devices (`pair.confirm`). The pairing is
+     stored only after both devices accept.
+   - **Why the commit step matters:** a code derived from `h` alone can be brute-forced by an active
+     man-in-the-middle. It controls the ephemeral keys on both legs and can try about 10^6 values offline
+     until the two codes match. With the commit step, the responder is bound to `n_r` before it sees `n_i`, and
+     the initiator reveals `n_i` before it sees `n_r`, so the attacker gets one 1-in-a-million guess per
+     attempt.
 
-After pairing, both devices store `{device_id, static_pubkey, name, pair_secret}`.
-`pair_secret = HKDF(handshake_hash, "pairly-pair-secret")` is used later to derive the relay room
-(see section 11).
+After pairing, both devices store `{device_id, static_pubkey, name, device_type, pair_secret}`, where
+`pair_secret = BLAKE2s("pairly-pair-secret" ‖ h ‖ n_i ‖ n_r)`. It is used later to derive the relay room (see
+section 11). The nonces travel encrypted, so `pair_secret` is unknown to observers. The handshake hash on its
+own is **not** secret, so it must never be used as a key.
+
+Before the first Noise message, the initiator sends a 2-byte **hello** `[version, kind]` in the clear
+(kind 1 = pair, 2 = QR pair, 3 = reconnect). The hello is also bound into the Noise prologue, so an attacker
+who rewrites it makes the handshake fail. A responder in IK mode checks the initiator's key after the first
+message and refuses unpaired keys before replying.
 
 ### 6.3 Reconnect
 
@@ -685,6 +713,18 @@ no Android SDK/NDK):**
 
 ### Phase 1: Protocol and crypto core (no network yet)
 
+> **Status: done (2026-10-03).** 44 tests across `pairly-proto` (11), `pairly-crypto` (14) and
+> `pairly-core` (14 unit + 5 end-to-end node tests); 15 consecutive full runs passed with no flakes. Clippy and
+> rustfmt are clean. The whole core cross-compiles for `aarch64-linux-android`.
+> Changes from the original plan:
+> - The SAS pairing now has a commit/reveal step, and `pair_secret` is derived from the exchanged nonces
+>   (see 6.2).
+> - `identity` has no `device_id` field and now carries a `session_nonce` (see 5.3–5.4).
+> - Keepalive packets are named `keepalive` / `keepalive.ack`.
+> - `Session::close` flushes pending acks on a clean shutdown.
+> - Reconnecting with backoff and the tie-break for simultaneous connects are already implemented in the node.
+>   Phase 2 only has to add real transports.
+
 1. `pairly-proto`: write the `Envelope` and the packet structs from section 5.5 (ping, identity, ack first).
    Add CBOR encode/decode with size limits, and the `u16`-length frame codec as a `tokio_util::codec`.
 2. `pairly-crypto`:
@@ -714,6 +754,27 @@ no Android SDK/NDK):**
 
 ### Phase 2: LAN transport and Linux daemon MVP
 
+> **Status: done (2026-10-03).** Verified live with two `pairlyd` instances on one machine:
+> - They discovered each other over mDNS and paired via `pairly pair` / `pairly listen`, with matching codes.
+> - Pings went both ways, about 15 ms end to end including CLI start.
+> - After a restart, B reconnected automatically in under 1 s, with no re-pairing, and the keepalive RTT
+>   shows as 1 ms.
+>
+> 46 core tests (including an mDNS + QUIC end-to-end test) passed 10 runs in a row, and the core
+> cross-compiles for arm64 Android with QUIC, TLS and mDNS included.
+> Changes from the original plan:
+> - The second-instance override is a `bus_name` key in `config.toml`, plus `pairly --bus-name`.
+> - The CLI gained `listen` (answers incoming pairing requests and shows pings) and `unpair`.
+>   `--yes` exists for scripted tests only.
+> - The first plugin (`ping`) and the first `Platform` hook (`ping_received`) are in. Platform methods
+>   have no-op defaults.
+> - QUIC uses the `ring` crypto backend rather than `aws-lc-rs`, because it cross-compiles to Android
+>   without CMake.
+> - A dropped QUIC stream waits up to 2 s for in-flight bytes, such as acks flushed on close, to be
+>   acknowledged before the connection closes.
+> - `pairlyd` emits D-Bus signals before showing desktop notifications (in the background), so a slow
+>   notification daemon can't delay clients.
+
 1. `pairly-transport-lan`:
    - a quinn endpoint on a UDP port (default 47100, with fallback to a random port);
    - a self-signed cert, with a client config that skips verification (Noise handles authentication);
@@ -740,6 +801,37 @@ no Android SDK/NDK):**
 
 ### Phase 3: Android shell and FFI and LAN pairing with the PC
 
+> **Status: done (2026-10-03).** Verified on the moto g85 5G (Android 16) against `pairlyd` on the PC:
+> - The phone discovered the PC over mDNS and paired from the phone UI, with the same code on both
+>   screens (152 710).
+> - Pings work both ways, with a heads-up notification on the phone and a 3–5 ms RTT.
+> - After a force-stop and reopen, the phone reconnects in about 2 s.
+> - After a `pairlyd` restart, the two reconnect in about 1 s.
+> - When USB tethering was turned off and on (the PC's address changed), both sides rediscovered each other
+>   in about 2 s. The live session survived through QUIC connection migration, with no reconnect needed.
+>
+> What was built:
+> - `pairly-ffi`: UniFFI 0.32, a private Tokio runtime, `EventListener`/`SecretStore` callback traits, and
+>   logs sent to logcat.
+> - A `crates/uniffi-bindgen` host tool.
+> - `scripts/build-rust.sh`, plus a typed Gradle `BuildRust` task wired in through the AGP 9 Variant API
+>   (`addGeneratedSourceDirectory`). The output goes to `build/`, so nothing generated is committed.
+> - A Keystore AES-GCM–wrapped identity, a foreground service (`connectedDevice`) holding a multicast lock,
+>   and a Compose UI: device cards, an available list, the code dialog, and unpair confirmation.
+>
+> Changes from the original plan:
+> - The `ForeignTransport` stub is postponed to Phase 9, when Bluetooth needs it.
+> - Pings reach Kotlin as an `Event` rather than through a `Platform` callback interface, which arrives with
+>   Phase 5.
+> - Added `Transport::network_changed` / `Node.networkChanged()`: Android calls it from a `NetworkCallback`
+>   and when the app returns to the foreground, to re-announce and re-browse over mDNS. Without it, a network
+>   that appeared after startup went unnoticed until the app restarted.
+>
+> **Setup lessons (also in the Linux README):**
+> - firewalld's `public` zone blocks this by default. It needs `mdns` and `47100/udp` opened.
+> - Routers with client/AP isolation block phone↔PC traffic entirely, even pings. USB tethering or the phone's
+>   hotspot works around it. Phase 8 (the relay) is the real fix for networks like that.
+
 1. `pairly-ffi`: expose `PairlyNode` through UniFFI:
    - `#[uniffi::export]` on async methods;
    - a callback interface for `Platform`;
@@ -762,6 +854,35 @@ no Android SDK/NDK):**
 
 ### Phase 4: Linux GTK UI
 
+> **Status: done (2026-10-03).** Verified on the PC and phone:
+> - Scanning the QR code in the GTK window with the phone's new **Scan code** screen paired both devices from
+>   scratch, with no code comparison. The dialog closed and both sides showed "Connected".
+> - Pings from the phone appear as toasts plus a desktop notification.
+> - The tray icon shows in Waybar.
+> - `pairlyd` runs as a systemd user service, also started on demand by D-Bus activation.
+> - Quitting the window (Ctrl+Q) leaves the daemon and the connection running.
+>
+> What was built:
+> - **QR pairing (core):** `QrInvite` (`pairly://pair?v=1&pk=…&s=…&a=lan:ip:port`). It is one-time and
+>   expires after 5 minutes. The PSK is BLAKE2s of the 128-bit secret, and the phone pins `pk`. Tested:
+>   reuse, cancel, expiry, and a tampered secret or key.
+> - **Parallel dialing:** candidates are dialed in parallel, each 200 ms after the previous, so VPN addresses
+>   like Cloudflare WARP don't add a 10 s timeout.
+> - **`pairly-gtk`** (relm4 + libadwaita): split view, device page, QR dialog that refreshes itself, code
+>   dialog, toasts, an `app.pair` action and `--pair` flag, and single-instance raise.
+> - **Tray:** ksni in `pairlyd` (Open, Pair a New Device…, per-device Send Ping, Quit).
+> - **Install:** `data/` (icons, `.desktop`, systemd unit, D-Bus activation file) and
+>   `make install-user` / `make uninstall-user`.
+>
+> Changes from the original plan:
+> - The GTK UI uses relm4 for the component loop and async commands, but builds the dynamic widgets by hand
+>   rather than with `view!`.
+> - There is no `pairly://` deep link on Android yet. A web page could fire it and pair the phone without the
+>   user's intent, so it would need a confirmation dialog first.
+> - **Build memory:** an unbounded release build (LTO with `codegen-units = 1` and 8 parallel jobs) froze the
+>   7.5 GB dev machine. The Linux release profile no longer uses LTO, and both the Makefile and the Android
+>   Rust script default to 4 jobs.
+
 1. Set up `pairly-gtk` with relm4 and libadwaita, using the async D-Bus proxy from `pairly-dbus`.
 2. Build the split view, device list with status badges, and device page with Ping.
 3. Build the pairing dialog: QR display (implement the QR flow from section 6.2 in the core here, together with
@@ -778,6 +899,41 @@ no Android SDK/NDK):**
 ---
 
 ### Phase 5: Notification sync both ways (the first real feature)
+
+> **Status: done (2026-10-03).** Verified with the moto g85 and swaync 0.12.6 on Hyprland:
+> - **Phone → PC:** a notification reaches a swaync popup in about 0.3 s, with the app icon and the app's
+>   action buttons.
+> - **WhatsApp replies:** a reply typed on the PC was delivered, including 6 s after WhatsApp had already
+>   removed the notification.
+> - **PC → phone:** `notify-send` shows on the phone.
+> - **Dismissal:** all four paths sync (phone swipe ↔ PC close, swaync dismiss ↔ phone cancel).
+> - **No loops:** exactly one notification per event on each side.
+>
+> What was built:
+> - **Plugin:** the `notification` plugin (posted/removed/active from the source; dismiss/action/reply from
+>   mirrors, with a resync on connect) behind a per-plugin `NotificationHost` trait. Covered by an
+>   end-to-end test.
+> - **Linux mirrors:** shown in the notification server with buttons, an RGBA icon and the
+>   `x-pairly-origin` hint. Replies use inline reply or a floating `pairly-gtk --reply` window. Only a
+>   *user* dismissal is sent back; an expired popup is not.
+> - **Linux monitor:** a dedicated D-Bus monitor connection forwards this PC's notifications. It skips its
+>   own, transient, OSD and ignored ones.
+> - **Android:** a `NotificationListenerService` (skips ongoing, summary, media, own and muted
+>   notifications), mirrors with dismiss/action/reply receivers, an access card and a per-app picker.
+>
+> Lessons from real apps:
+> - **swaync** advertises `inline-reply` even when its config turns the field off, and then hides the
+>   action. `pairlyd` reads swaync's config and falls back to the dialog. There's also
+>   `[notifications] reply = auto|inline|dialog`.
+> - **Chat apps** replace or clear message notifications within seconds (WhatsApp cleared them about 2 s
+>   after posting). Actions and replies resolve to the newest notification of the same conversation
+>   (`shortcutId` or title), or to a removed notification's saved `PendingIntent`s for 15 minutes.
+>
+> Not done / limits:
+> - Actions on *PC* notifications can't be triggered from the phone, because the spec has no API for
+>   invoking another app's actions.
+> - PC notifications go to the phone without icons.
+> - Linux per-app filtering is `ignore_apps` in `config.toml` only, with no GTK UI yet.
 
 1. Add the `notification` plugin logic in `pairly-plugins`: packet handling, loop-prevention rules and the
    history store.
@@ -809,6 +965,44 @@ no Android SDK/NDK):**
 
 ### Phase 6: Clipboard, battery, find my phone
 
+> **Status: done (2026-10-04).** Verified with the moto g85 on Hyprland:
+> - **Clipboard:** copying on the PC pastes on the phone ("Copied from three"). The phone's
+>   clipboard reaches the PC from the device card, the notification action and the Quick
+>   Settings tile, with no echo back.
+> - **Battery:** both sides show the other's level and charging state, live.
+> - **Find my phone:** the phone rings and vibrates on silent until stopped from either side.
+> - **Find my PC:** plays an alarm for 30 s, or until stopped from the phone.
+>
+> What was built:
+> - **Plugins** (`clipboard`, `battery`, `findmy`) behind small host traits, covered by an
+>   end-to-end test.
+> - **Clipboard** is text only, up to 512 KiB, and remembers the last text sent or received so a
+>   received clipboard isn't sent back.
+> - **Linux:** `wl-paste --watch` / `wl-copy` (skipping `x-kde-passwordManagerHint`), UPower's
+>   DisplayDevice, low-battery alerts at 15 %, and Clipboard / Find My Phone rows in GTK, the tray
+>   and the CLI (`pairly clip`, `pairly ring [--stop]`). `[clipboard] auto = false` turns the
+>   watcher off.
+> - **Android:**
+>   - a translucent activity that reads the clipboard (it needs focus on Android 10+), used by
+>     the QS tile and the notification action;
+>   - the sticky battery broadcast;
+>   - an alarm-stream ringer with vibration and a stop notification.
+>
+> Changes from plan:
+> - Clipboard uses the `wl-clipboard` tools instead of `wl-clipboard-rs`: they work on every
+>   wlroots compositor without another protocol binding.
+> - The ringer is a high-priority notification with Stop, not a full-screen activity.
+>
+> Lessons:
+> - **"Find my PC" must ignore the default output.** It was a pair of Bluetooth earbuds at 21 %,
+>   so the PC rang silently. `pairlyd` now picks the first non-Bluetooth sink from `pw-dump` and
+>   plays at full stream volume.
+>
+> Not done / limits:
+> - Images and files on the clipboard (files go through Phase 7 sharing).
+> - GNOME has no data-control protocol, so the automatic watcher only works on wlroots/KDE.
+> - The phone can't send its clipboard automatically in the background (Android 10+ blocks it).
+
 1. **clipboard:**
    - **Linux:** a `wl-clipboard-rs` watcher sends changes automatically (a setting: auto or manual) and sets
      the clipboard on receive.
@@ -830,6 +1024,67 @@ no Android SDK/NDK):**
 ---
 
 ### Phase 7: File, URL and text sharing
+
+> **Status: done (2026-10-04).** Verified with the moto g85 over USB tethering:
+> - **1 GB, PC → phone:** 39 s (about 25.6 MB/s, 205 Mbit/s, roughly the tethering link's limit).
+>   The SHA-256 matches on the phone.
+> - **1 GB, phone → PC, with USB tethering switched off partway and back on:** the transfer resumed
+>   and finished, and the SHA-256 matches.
+> - **Photos:** 12 at once from Gallery's share sheet arrived in `~/Downloads`.
+> - **Links:** both ways. They open in the PC's browser, and as a tap-to-open notification on the phone.
+> - **Text:** PC → phone lands on the clipboard with a notification.
+>
+> Protocol (as built):
+> - `share.offer{transfer, name, size, mime}` → `share.accept{offset}`.
+> - `share.chunk{offset, data}`: 63 KiB, unreliable, bulk priority. Paced by
+>   `share.progress{offset}` (receiver → sender every 1 MiB, with an 8 MiB window).
+> - `share.done{sha256}` once everything is confirmed, then `share.finished` or
+>   `share.cancel{reason?}` (either side).
+> - The receiver only takes the chunk at the offset it expects. After any reconnect or channel
+>   swap it re-sends `share.accept` with what it has, and the sender rewinds there.
+> - The sender rehashes the prefix if it has to go back. If no resume comes within 30 s of a
+>   reconnect, the sender fails the transfer, because the receiver forgot it (restarted).
+> - `share.text{text, url}` carries links and text. Only `http(s)` links are ever opened.
+> - The receiver strips paths, control characters and leading dots from names, and gives incoming
+>   transfers its own local ids.
+> - File I/O runs on one OS thread per transfer, using positioned reads and writes.
+>
+> What was built:
+> - **Core:**
+>   - the `share` plugin and an end-to-end test that cuts the connection mid-file
+>     (`MemoryNetwork::sever`);
+>   - the session now drops unreliable packets that were queued for a dead channel.
+> - **Linux:**
+>   - files are written as `name.part` in `XDG_DOWNLOAD_DIR`, created with `create_new`, then
+>     renamed to a unique name;
+>   - **Open** / **Show in Folder** notification buttons;
+>   - `[share] auto_accept`, `open_urls`, `download_dir`;
+>   - D-Bus `SendFiles` / `SendText` / `AcceptTransfer` / `CancelTransfer` / `ListTransfers` and
+>     a `TransferChanged` signal;
+>   - CLI `pairly send|url|text|transfers`;
+>   - GTK: drag-and-drop onto the window or a sidebar device, **Send…**, a **Link or Text** dialog,
+>     transfer rows with live progress and Accept/Decline, and toasts;
+>   - `pairly-gtk --send [--to <dev>] [files]`, used by the Nautilus script, the Dolphin and Nemo
+>     entries, the launcher action and the tray's **Send Files…**.
+> - **Android:**
+>   - share-sheet target (`ShareActivity`) and a file picker on the device card;
+>   - received files go through MediaStore into `Download/Pairly`, kept pending until verified;
+>   - descriptors are handed to Rust with `detachFd()`; non-seekable streams are copied to the
+>     cache first;
+>   - progress notifications with Cancel, an offer notification with Accept/Decline, and an
+>     **Ask before receiving files** setting (off by default).
+>
+> Changes from plan:
+> - The SHA-256 is sent only in `share.done`, so sending starts without hashing the whole file
+>   first.
+> - Links and text use their own `share.text` packet instead of `share.offer`.
+> - Linux progress is in the GTK app and the CLI, not in popovers or notifications.
+>
+> Not done / limits:
+> - Transfers resume across disconnects and transport switches, but not across a daemon or app
+>   restart: partial files are deleted, and no transfer state is kept in the registry.
+> - Folders aren't supported. Send their files, or zip them first.
+> - Android 8–9 saves to the app's own folder, because MediaStore Downloads needs Android 10.
 
 1. The `share` plugin with resumable transfers:
    - `share.offer` → `share.accept{resume_offset}` → `share.chunk` stream (64 KiB, bulk priority) →
@@ -854,6 +1109,72 @@ no Android SDK/NDK):**
 ---
 
 ### Phase 8: Relay server, internet transport, migration
+
+> **Status: built and tested locally (2026-10-04); waiting on the VPS for the mobile-data test.**
+> Verified with the relay running on the PC and the moto g85 on USB tethering, with LAN switched
+> off on the PC (`[lan] enabled = false`):
+> - **Learning the relay:** the phone learned the relay from the PC over LAN, with nothing
+>   configured on the phone.
+> - **Connecting:** it met the PC on the relay 10 ms after the daemon started.
+> - **Traffic:**
+>   - ping and text arrived;
+>   - a 100 MB file took 4.2 s, its SHA-256 matched, and the relay counted exactly 100 MB;
+>   - notifications went both ways, and a WhatsApp reply from the PC was delivered.
+> - **LAN back on:** the session moved from relay to LAN 80 ms after connecting. The phone then
+>   left the relay (relay stats: 1 connection, 0 pipes).
+> - **Automated test:** a real in-process relay fails over when the LAN disappears and moves
+>   back while 20 messages are in flight, with none lost or duplicated. Wrong tokens and wrong
+>   certificate pins are refused. The test passed 12 times in a row.
+>
+> Design as built (`pairly-transport-relay::proto`):
+> - **Connections and streams:** one QUIC connection per relay. Each request is a stream that
+>   starts with `JOIN{role, room[16], token}`.
+>   - A *listener* gets `PRESENT`/`ABSENT` as the other device comes and goes, and `MATCHED`
+>     when it's called. After that the stream is a pipe, and a new listener is opened.
+>   - A *dialer* gets `MATCHED` or `NO_PEER`.
+> - **Presence is membership:** a device is "present" from its first listener until it hangs
+>   up or disconnects, so re-arming after each call doesn't flap.
+> - **Rooms:** `BLAKE2s("pairly-relay-room" ‖ pair_secret)[..16]`. The relay sees only room IDs
+>   and Noise ciphertext.
+> - **Trust:** the relay certificate is self-signed and clients pin its SHA-256. The address
+>   format is `pairly-relay://[token@]host:port/<base32 pin>`, so no domain or CA is needed.
+> - **Relay discovery:** devices announce their relay in the encrypted `identity` packet
+>   (`Identity.relay`), and peers store it (registry schema v2: a `relay` column). Only the PC
+>   needs configuring.
+> - **Link ranking:** LAN 100 > BT 60 > Relay 30.
+>   - `replaces()` prefers the higher rank before the direction tie-break.
+>   - Seeing a better candidate while connected starts an upgrade loop (retries 10 s → 5 min,
+>     woken early by a new sighting). A reconnect dials the best kinds first.
+>   - LAN mDNS now reports every resolve, so "seen again" triggers the move back home.
+> - **Phone battery policy:** relay connections are only kept for devices without a better link
+>   (`RelayConfig::only_when_needed`). The PC stays in every room.
+> - **Relay limits:** an access token, connections per IP (32), rooms per connection (64), an
+>   optional per-pipe rate cap, a 60 s idle timeout, and a statistics log line.
+> - **Shutdown:** the relay waits at most 2 s for clients when it stops.
+> - **Deployment:** Docker and compose (no-LTO build so it fits a small VPS), a hardened systemd
+>   unit, and a step-by-step VPS guide in `pairly-core/crates/pairly-relay/README.md`.
+> - **Linux:**
+>   - `[relay] address`, and `[lan] enabled = false` for relay-only setups;
+>   - a `session on link` log line for every link change.
+>
+> Changes from plan:
+> - There is no full scoring formula with hysteresis. Links have a strict rank, and the session
+>   only moves up, and only after the better link completes its handshake. That rules out
+>   flapping without needing timers.
+> - The old channel is replaced at once, with no 2 s grace period. Unacked packets are resent
+>   and duplicates dropped.
+> - The relay address is learned from the paired PC instead of being typed into both UIs.
+>
+> Not done / limits:
+> - **The mobile-data test needs the VPS** (follow the relay README, then put the address in
+>   `config.toml`).
+> - Pairing still needs both devices on the same network (or a QR code reachable on it). The
+>   relay is only used for paired devices.
+> - Hole punching and UnifiedPush (8b) are not started.
+> - Moving *down* from LAN waits for the 45 s keepalive timeout, so leaving home takes up to
+>   about 45 s to switch to the relay.
+> - Networks that block UDP entirely can't reach the relay. There is no TCP fallback yet.
+> - Android has no UI to set its own relay; it always uses the PC's.
 
 1. `pairly-relay`:
    - QUIC listener and the room protocol (`JOIN`, `PAIRED`, then opaque piping);
