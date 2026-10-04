@@ -1202,6 +1202,63 @@ no Android SDK/NDK):**
 
 ### Phase 9: Bluetooth transport
 
+> **Status: done (2026-10-04).** Verified with the moto g85: Wi-Fi and USB tethering off, no relay,
+> phone bonded with the PC in Bluetooth settings.
+> - **Connecting:** the phone found Pairly's RFCOMM service (channel 22) and connected over
+>   Bluetooth.
+> - **Traffic:**
+>   - ping and text arrived;
+>   - notifications went both ways;
+>   - the clipboard tile reached the PC;
+>   - a 3 MB file took 15 s (about 200 KB/s, normal for RFCOMM) and its SHA-256 matched.
+> - **Back to LAN:** turning tethering back on moved the session from Bluetooth to LAN on its
+>   own.
+> - **Tests:** the Kotlin socket bridge is covered by a test that runs a Noise handshake and
+>   200 KB each way through in-memory sockets, then checks end-of-stream propagation.
+>
+> What was built:
+> - **Core:**
+>   - `Identity.bluetooth`: PCs announce their adapter address, because Android apps can't read
+>     their own.
+>   - Registry schema v3 adds a `bluetooth` column.
+>   - `TransportEvent::Incoming.remote` lets the PC learn a phone's address from the phone's
+>     first Bluetooth connection (stored only after Noise authenticates the peer).
+>   - `KnownAddresses` turns known addresses into candidates for transports without discovery.
+>   - `BLUETOOTH_SERVICE_UUID` is `9666e1eb-cdfa-4e10-aab2-648e9e26ac5d`.
+> - **Linux (`pairly-transport-bt`, bluer):**
+>   - an RFCOMM profile, both roles, requiring an existing bond and with no per-connection
+>     prompt;
+>   - dialing uses `Device.ConnectProfile`, with BlueZ handing the socket to our profile;
+>   - `[bluetooth] enabled`, on by default; without an adapter or `bluetoothd` the daemon just
+>     logs "no Bluetooth".
+> - **Android:**
+>   - Kotlin owns the sockets: an RFCOMM server via `listenUsingRfcommWithServiceRecord`, and
+>     `createRfcommSocketToServiceRecord` for dialing.
+>   - Rust drives them through the UniFFI `BluetoothHandler` / `BluetoothSocket` traits, with a
+>     reader thread plus ordered writes on the blocking pool bridged to a byte stream.
+>   - The server restarts when Bluetooth is toggled.
+>   - An "Allow Bluetooth" card asks for `BLUETOOTH_CONNECT` (Nearby devices).
+>
+> Lessons:
+> - **BlueZ needs an explicit channel.** Without `Channel`, BlueZ registers a custom-UUID
+>   profile but starts no listener and publishes no SDP record, so Android's SDP lookup fails
+>   with `scn: 0`. Fixed with channel 22.
+> - **Naming clash in the bindings.** A UniFFI foreign trait can't have a `close()` method,
+>   because the generated Kotlin classes are `AutoCloseable`. Renamed it to `disconnect()`.
+>
+> Changes from plan:
+> - There is no separate probe schedule. Bluetooth candidates are offered for every known
+>   address. Links are ranked (LAN > BT > Relay), so a dial only happens when disconnected, or
+>   to upgrade from the relay.
+>
+> Not done / limits:
+> - **Untested direction:** the PC dialing the phone (BlueZ `ConnectProfile`) hasn't been tried
+>   on the device. In practice the phone dials, and the PC only learns the phone's address after
+>   that first connection.
+> - **Speed:** about 200 KB/s, so large files over Bluetooth are slow.
+> - **Pairing:** Pairly pairing itself still happens on LAN or by QR code.
+> - **Leaving Wi-Fi:** moving down from LAN to Bluetooth waits for the 45 s keepalive timeout.
+
 1. **Linux:** `pairly-transport-bt` with `bluer`:
    - register an RFCOMM profile with the Pairly UUID;
    - accept and dial connections;

@@ -20,6 +20,8 @@ import dev.pairly.core.ffi.PairlyException
 import dev.pairly.core.ffi.TransferData
 import dev.pairly.core.ffi.TransferStatus
 import dev.pairly.core.ffi.startNode
+import dev.pairly.android.bluetooth.AndroidBluetooth
+import dev.pairly.android.bluetooth.PairlyBluetooth
 import dev.pairly.android.device.DeviceFeatures
 import dev.pairly.android.notifications.MirroredNotifications
 import dev.pairly.android.notifications.PhoneNotifications
@@ -133,6 +135,7 @@ object Pairly {
                     MirroredNotifications(appContext),
                     DeviceFeatures(appContext),
                     ShareFeatures(),
+                    AndroidBluetooth(appContext),
                 )
             }
             node = started
@@ -142,6 +145,7 @@ object Pairly {
             }
             PhoneNotifications.resend(appContext)
             DeviceFeatures.current(appContext)?.let { started.batteryChanged(it) }
+            bluetoothChanged()
             _state.update { it.copy(self = SelfInfo(started.name(), started.deviceId()), starting = false) }
             refresh()
         } catch (e: Exception) {
@@ -156,6 +160,7 @@ object Pairly {
             lifecycle.withLock {
                 val stopping = node ?: return@withLock
                 node = null
+                PairlyBluetooth.stopServer()
                 PhoneNotifications.sink = null
                 stopping.shutdown()
                 stopping.close()
@@ -179,6 +184,17 @@ object Pairly {
                 n.networkChanged()
             }
         }
+    }
+
+    /** Bluetooth was switched on or off, or its permission granted: (re)start listening. */
+    fun bluetoothChanged() {
+        val n = node ?: return
+        val adapterOn = PairlyBluetooth.adapter(appContext)?.isEnabled == true
+        if (!adapterOn) {
+            PairlyBluetooth.stopServer()
+            return
+        }
+        PairlyBluetooth.startServer(appContext) { socket, address -> n.bluetoothIncoming(socket, address) }
     }
 
     fun requestPair(id: String) {

@@ -19,6 +19,7 @@ pairly-crypto.workspace = true
 pairly-plugins.workspace = true
 pairly-transport-lan.workspace = true
 pairly-transport-relay.workspace = true
+async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
@@ -27,3 +28,9 @@ uniffi.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 paranoid-android.workspace = true
+
+[dev-dependencies]
+pairly-proto.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

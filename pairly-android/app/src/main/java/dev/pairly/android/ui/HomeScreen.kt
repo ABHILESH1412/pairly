@@ -67,6 +67,7 @@ import dev.pairly.android.PairingPrompt
 import dev.pairly.android.R
 import dev.pairly.android.SelfInfo
 import dev.pairly.android.UiState
+import dev.pairly.android.bluetooth.PairlyBluetooth
 import dev.pairly.android.notifications.PairlyNotificationListener
 import dev.pairly.android.share.SharePrefs
 import dev.pairly.android.ui.theme.PairlyTheme
@@ -96,9 +97,15 @@ fun HomeRoute() {
     val context = LocalContext.current
     var askBeforeReceiving by remember { mutableStateOf(SharePrefs.askBeforeReceiving(context)) }
     var notificationAccess by remember { mutableStateOf(PairlyNotificationListener.isEnabled(context)) }
+    var bluetoothAllowed by remember { mutableStateOf(PairlyBluetooth.permitted(context)) }
+    val requestBluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        bluetoothAllowed = granted
+        if (granted) Pairly.bluetoothChanged()
+    }
     // Re-check when coming back from the system settings screen.
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         notificationAccess = PairlyNotificationListener.isEnabled(context)
+        bluetoothAllowed = PairlyBluetooth.permitted(context)
     }
     LaunchedEffect(Unit) {
         Pairly.messages.collect { snackbar.showSnackbar(it) }
@@ -141,6 +148,12 @@ fun HomeRoute() {
         onAcceptTransfer = Pairly::acceptTransfer,
         onCancelTransfer = Pairly::cancelTransfer,
         askBeforeReceiving = askBeforeReceiving,
+        bluetoothAllowed = bluetoothAllowed,
+        onAllowBluetooth = {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                requestBluetooth.launch(android.Manifest.permission.BLUETOOTH_CONNECT)
+            }
+        },
         onAskBeforeReceiving = {
             askBeforeReceiving = it
             SharePrefs.setAskBeforeReceiving(context, it)
@@ -170,6 +183,8 @@ fun HomeScreen(
     onCancelTransfer: (ULong) -> Unit = {},
     askBeforeReceiving: Boolean = false,
     onAskBeforeReceiving: (Boolean) -> Unit = {},
+    bluetoothAllowed: Boolean = true,
+    onAllowBluetooth: () -> Unit = {},
 ) {
     val paired = state.devices.filter { it.paired }
     val available = state.devices.filterNot { it.paired }
@@ -223,6 +238,9 @@ fun HomeScreen(
             }
             if (paired.isNotEmpty()) {
                 item { NotificationAccessCard(notificationAccess, onChooseApps) }
+                if (!bluetoothAllowed) {
+                    item { BluetoothCard(onGrant = onAllowBluetooth) }
+                }
                 item { SectionHeader(stringResource(R.string.section_paired)) }
                 items(paired, key = { it.id }) { device ->
                     PairedDeviceCard(

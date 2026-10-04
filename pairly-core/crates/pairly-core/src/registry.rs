@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::Result;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 #[derive(Clone)]
 pub struct PairedDevice {
@@ -25,6 +25,8 @@ pub struct PairedDevice {
     pub paired_at: u64,
     /// The relay the device last told us it uses (`pairly-relay://…`).
     pub relay: Option<String>,
+    /// The device's Bluetooth address: announced by it, or seen on a connection from it.
+    pub bluetooth: Option<String>,
 }
 
 impl fmt::Debug for PairedDevice {
@@ -35,6 +37,7 @@ impl fmt::Debug for PairedDevice {
             .field("device_type", &self.device_type)
             .field("paired_at", &self.paired_at)
             .field("relay", &self.relay)
+            .field("bluetooth", &self.bluetooth)
             .finish_non_exhaustive()
     }
 }
@@ -80,6 +83,9 @@ impl Registry {
         if version < 2 {
             conn.execute_batch("ALTER TABLE devices ADD COLUMN relay TEXT;")?;
         }
+        if version < 3 {
+            conn.execute_batch("ALTER TABLE devices ADD COLUMN bluetooth TEXT;")?;
+        }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -96,8 +102,8 @@ impl Registry {
     pub fn upsert(&self, d: &PairedDevice) -> Result<()> {
         self.lock().execute(
             "INSERT OR REPLACE INTO devices
-                (id, public_key, name, device_type, pair_secret, paired_at, relay)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (id, public_key, name, device_type, pair_secret, paired_at, relay, bluetooth)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 d.id.to_string(),
                 &d.public_key.as_bytes()[..],
@@ -106,6 +112,7 @@ impl Registry {
                 &d.pair_secret[..],
                 i64::try_from(d.paired_at).unwrap_or(i64::MAX),
                 d.relay,
+                d.bluetooth,
             ],
         )?;
         Ok(())
@@ -147,6 +154,14 @@ impl Registry {
         )? > 0)
     }
 
+    /// Remember a device's Bluetooth address. Returns whether it changed.
+    pub fn set_bluetooth(&self, id: &DeviceId, address: &str) -> Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE devices SET bluetooth = ?2 WHERE id = ?1 AND bluetooth IS NOT ?2",
+            params![id.to_string(), address.to_ascii_uppercase()],
+        )? > 0)
+    }
+
     /// Returns whether a device was removed.
     pub fn remove(&self, id: &DeviceId) -> Result<bool> {
         Ok(self
@@ -173,6 +188,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<PairedDevice> {
         pair_secret: secret.try_into().map_err(|_| bad(4, "bad pair secret"))?,
         paired_at: u64::try_from(paired_at).unwrap_or(0),
         relay: row.get("relay")?,
+        bluetooth: row.get("bluetooth")?,
     })
 }
 
@@ -192,6 +208,7 @@ mod tests {
             pair_secret: [3; 32],
             paired_at: unix_now(),
             relay: None,
+            bluetooth: None,
         }
     }
 
@@ -217,6 +234,9 @@ mod tests {
             reg.get(&d.id).unwrap().unwrap().relay.as_deref(),
             Some("pairly-relay://r:1/p")
         );
+
+        assert!(reg.set_bluetooth(&d.id, "5c:ba:ef:42:73:8c").unwrap());
+        assert!(!reg.set_bluetooth(&d.id, "5C:BA:EF:42:73:8C").unwrap());
 
         reg.set_name(&d.id, "Renamed").unwrap();
         assert_eq!(reg.list().unwrap()[0].name, "Renamed");
@@ -251,7 +271,10 @@ mod tests {
         }
         let reg = Registry::open(&path).unwrap();
         let got = reg.get(&d.id).unwrap().unwrap();
-        assert_eq!((got.name.as_str(), got.relay), ("Old", None));
+        assert_eq!(
+            (got.name.as_str(), got.relay, got.bluetooth),
+            ("Old", None, None)
+        );
         assert!(reg.set_relay(&d.id, Some("pairly-relay://r:1/p")).unwrap());
     }
 

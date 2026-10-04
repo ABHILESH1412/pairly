@@ -225,6 +225,7 @@ async fn accept_loop(endpoint: QuicEndpoint, events: mpsc::Sender<TransportEvent
                         .send(TransportEvent::Incoming {
                             stream: Box::new(stream),
                             transport: TransportKind::Lan,
+                            remote: None,
                         })
                         .await;
                 }

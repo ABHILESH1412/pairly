@@ -76,9 +76,21 @@ pub struct Identity {
     /// Sent only inside the encrypted channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
+    /// This device's Bluetooth address (`AA:BB:CC:DD:EE:FF`), so a paired peer can dial it over
+    /// RFCOMM. Phones can't read their own address, so only PCs send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bluetooth: Option<String>,
 }
 impl PacketBody for Identity {
     const TYPE: &'static str = "identity";
+}
+
+/// `AA:BB:CC:DD:EE:FF` (case-insensitive).
+pub fn is_bluetooth_address(s: &str) -> bool {
+    s.len() == 17
+        && s.split(':').count() == 6
+        && s.split(':')
+            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 impl Identity {
@@ -114,6 +126,13 @@ impl Identity {
             .is_some_and(|r| r.len() > Self::MAX_RELAY_LEN || r.chars().any(char::is_control))
         {
             return invalid("relay", "too long or malformed");
+        }
+        if self
+            .bluetooth
+            .as_deref()
+            .is_some_and(|a| !is_bluetooth_address(a))
+        {
+            return invalid("bluetooth", "not a Bluetooth address");
         }
         Ok(())
     }
@@ -172,6 +191,7 @@ mod tests {
             incoming: vec!["ping".into()],
             outgoing: vec!["ping".into()],
             relay: Some("pairly-relay://relay.example:47200/abc".into()),
+            bluetooth: Some("5C:BA:EF:42:73:8C".into()),
         }
     }
 

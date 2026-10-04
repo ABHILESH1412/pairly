@@ -42,6 +42,8 @@ pub struct NodeConfig {
     pub qr_timeout: Duration,
     /// The relay this device uses (`pairly-relay://…`); announced to paired peers.
     pub relay: Option<String>,
+    /// This device's Bluetooth address, announced to paired peers so they can dial it.
+    pub bluetooth: Option<String>,
     pub session: SessionConfig,
 }
 
@@ -56,6 +58,7 @@ impl NodeConfig {
             reconnect_max_backoff: Duration::from_secs(30),
             qr_timeout: Duration::from_secs(300),
             relay: None,
+            bluetooth: None,
             session: SessionConfig::default(),
         }
     }
@@ -177,6 +180,7 @@ impl NodeBuilder {
             incoming,
             outgoing,
             relay: self.config.relay.clone(),
+            bluetooth: self.config.bluetooth.clone(),
         };
         local.validate()?;
 
@@ -437,6 +441,7 @@ impl Inner {
                     rendezvous: rendezvous(&d.pair_secret),
                     relays,
                     link: self.link(&d.id),
+                    bluetooth: d.bluetooth,
                 }
             })
             .collect();
@@ -649,8 +654,22 @@ impl Inner {
         self: &Arc<Self>,
         stream: BoxDuplex,
         transport: TransportKind,
+        remote: Option<String>,
     ) -> Result<()> {
         let ch = channel::accept(stream, transport, &self.identity, &Policy(self)).await?;
+        // A paired device dialed us over Bluetooth: now we can dial it back (phones can't tell
+        // us their address themselves). Only after Noise authenticated it.
+        if transport == TransportKind::Bluetooth
+            && let Some(address) = remote.as_deref()
+            && self.is_paired(&ch.peer_id())
+            && pairly_proto::packets::is_bluetooth_address(address)
+            && self
+                .registry
+                .set_bluetooth(&ch.peer_id(), address)
+                .unwrap_or(false)
+        {
+            self.update_transport_peers();
+        }
         // A QR code pairs exactly once: the first completed handshake consumes it.
         if ch.info.kind == HandshakeKind::PairPsk && self.lock().qr.take().is_none() {
             return Err(CoreError::PairingDisabled);
@@ -703,6 +722,13 @@ impl Inner {
         }
         if let Err(e) = self.registry.set_relay(&id, identity.relay.as_deref()) {
             debug!(%id, error = %e, "can't store the peer's relay");
+        }
+        if let Some(address) = identity.bluetooth.as_deref() {
+            match self.registry.set_bluetooth(&id, address) {
+                Ok(true) => self.update_transport_peers(),
+                Ok(false) => {}
+                Err(e) => debug!(%id, error = %e, "can't store the peer's Bluetooth address"),
+            }
         }
         let link = ch.transport;
         let previous = session.transport();
@@ -891,6 +917,7 @@ impl Inner {
             pair_secret: sas.pair_secret,
             paired_at: unix_now(),
             relay: peer.relay.clone(),
+            bluetooth: peer.bluetooth.clone(),
         })?;
         info!(%id, name = %peer.name, "paired");
         self.emit(NodeEvent::Paired {
@@ -998,10 +1025,14 @@ async fn main_loop(inner: Arc<Inner>, mut rx: mpsc::Receiver<TransportEvent>) {
         match event {
             TransportEvent::Discovered(c) => inner.on_discovered(c),
             TransportEvent::Lost(c) => inner.on_lost(&c),
-            TransportEvent::Incoming { stream, transport } => {
+            TransportEvent::Incoming {
+                stream,
+                transport,
+                remote,
+            } => {
                 let node = inner.clone();
                 inner.spawn(async move {
-                    if let Err(e) = node.handle_incoming(stream, transport).await {
+                    if let Err(e) = node.handle_incoming(stream, transport, remote).await {
                         debug!(error = %e, "inbound connection failed");
                     }
                 });

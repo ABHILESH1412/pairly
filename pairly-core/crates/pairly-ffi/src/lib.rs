@@ -6,6 +6,8 @@
 //! All async work runs on a private Tokio runtime, so Kotlin can call from any coroutine
 //! dispatcher.
 
+mod bluetooth;
+
 use std::fs::File;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
@@ -30,9 +32,12 @@ use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 
+use bluetooth::ForeignBluetooth;
+pub use bluetooth::{BluetoothHandler, BluetoothSocket, bluetooth_service_uuid};
+
 uniffi::setup_scaffolding!();
 
-fn runtime() -> &'static Runtime {
+pub(crate) fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -609,6 +614,7 @@ pub struct Node {
     battery: Arc<BatteryPlugin>,
     findmy: Arc<FindMyPlugin>,
     share: Arc<SharePlugin>,
+    bluetooth: Arc<ForeignBluetooth>,
     forward: AbortHandle,
 }
 
@@ -621,6 +627,7 @@ pub async fn start_node(
     notifications: Arc<dyn NotificationHandler>,
     device: Arc<dyn DeviceHandler>,
     share: Arc<dyn ShareHandler>,
+    bluetooth: Arc<dyn BluetoothHandler>,
 ) -> Result<Arc<Node>, PairlyError> {
     init_logging();
     let task = runtime().spawn(async move {
@@ -632,6 +639,7 @@ pub async fn start_node(
         let battery = BatteryPlugin::new(device_host.clone());
         let findmy = FindMyPlugin::new(device_host);
         let share = SharePlugin::new(Arc::new(ForeignShareHost(share)));
+        let bluetooth = ForeignBluetooth::new(bluetooth);
         let mut config = NodeConfig::new(options.name, options.kind.into());
         config.relay = options.relay.filter(|r| !r.trim().is_empty());
         let node = PairlyNode::builder(config)
@@ -648,6 +656,7 @@ pub async fn start_node(
             .transport(RelayTransport::new(RelayConfig {
                 only_when_needed: true,
             }))
+            .transport(bluetooth.clone())
             .plugin(Arc::new(PingPlugin))
             .plugin(notifications.clone())
             .plugin(clipboard.clone())
@@ -673,6 +682,7 @@ pub async fn start_node(
             battery,
             findmy,
             share,
+            bluetooth,
             forward: forward.abort_handle(),
         })
     });
@@ -835,6 +845,11 @@ impl Node {
     /// Transfers that haven't finished.
     pub fn transfers(&self) -> Vec<TransferData> {
         self.share.transfers().iter().map(Into::into).collect()
+    }
+
+    /// A paired device connected to the app's Bluetooth server socket.
+    pub fn bluetooth_incoming(&self, socket: Arc<dyn BluetoothSocket>, address: String) {
+        self.bluetooth.incoming(socket, address);
     }
 
     /// Call when the OS reports a network change or the app returns to the foreground.

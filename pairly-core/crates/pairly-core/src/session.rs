@@ -601,6 +601,7 @@ mod tests {
             incoming: vec![],
             outgoing: vec![],
             relay: None,
+            bluetooth: None,
         }
     }
 

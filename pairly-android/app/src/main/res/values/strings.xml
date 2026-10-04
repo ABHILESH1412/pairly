@@ -103,6 +103,10 @@
         <item quantity="other">Sending %1$d files to %2$s</item>
     </plurals>
 
+    <string name="bt_title">Connect over Bluetooth</string>
+    <string name="bt_body">Reach your PC without Wi-Fi. Pair this phone with the PC in Bluetooth settings first, then allow Pairly to use Bluetooth connections.</string>
+    <string name="bt_grant">Allow Bluetooth</string>
+
     <string name="channel_service">Connection status</string>
     <string name="channel_pings">Pings</string>
     <string name="service_waiting">Waiting for your devices</string>

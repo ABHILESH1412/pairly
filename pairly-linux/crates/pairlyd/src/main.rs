@@ -25,6 +25,7 @@ use pairly_plugins::findmy::FindMyPlugin;
 use pairly_plugins::notification::NotificationPlugin;
 use pairly_plugins::ping::PingPlugin;
 use pairly_plugins::share::SharePlugin;
+use pairly_transport_bt::BluetoothTransport;
 use pairly_transport_lan::{LanConfig, LanTransport};
 use pairly_transport_relay::{RelayConfig, RelayTransport};
 use tokio::signal::unix::{SignalKind, signal};
@@ -80,6 +81,21 @@ async fn main() -> Result<()> {
         }
         None => info!("no relay configured: devices are reachable on the local network only"),
     }
+    let bluetooth = if config.bluetooth {
+        match BluetoothTransport::new().await {
+            Ok(bt) => {
+                node_config.bluetooth = bt.address().await;
+                info!(address = ?node_config.bluetooth, "Bluetooth available");
+                Some(bt)
+            }
+            Err(e) => {
+                info!(error = %e, "no Bluetooth");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let qr_timeout = node_config.qr_timeout;
     let mut builder = PairlyNode::builder(node_config)
         .keystore(Arc::new(FileKeyStore::new(
@@ -92,6 +108,9 @@ async fn main() -> Result<()> {
         .transport(RelayTransport::new(RelayConfig {
             only_when_needed: false,
         }));
+    if let Some(bt) = bluetooth {
+        builder = builder.transport(bt);
+    }
     if config.lan {
         builder = builder.transport(LanTransport::new(LanConfig {
             port: config.lan_port,

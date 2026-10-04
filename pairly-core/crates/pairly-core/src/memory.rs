@@ -191,6 +191,7 @@ impl Transport for MemoryTransport {
             .send(TransportEvent::Incoming {
                 stream: Box::new(theirs),
                 transport: TransportKind::Memory,
+                remote: None,
             })
             .await
             .map_err(|_| CoreError::Transport(format!("{} is not listening", target.address)))?;

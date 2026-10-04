@@ -1,6 +1,7 @@
 package dev.pairly.android
 
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -15,6 +16,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import dev.pairly.android.bluetooth.PairlyBluetooth
 import dev.pairly.android.device.DeviceFeatures
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +31,15 @@ class PairlyService : Service() {
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             DeviceFeatures.fromIntent(intent)?.let(Pairly::batteryChanged)
+        }
+    }
+    private val bluetoothReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+                BluetoothAdapter.STATE_ON, BluetoothAdapter.STATE_OFF -> Pairly.bluetoothChanged()
+                // Stop before the adapter goes, so the server socket isn't left half-closed.
+                BluetoothAdapter.STATE_TURNING_OFF -> PairlyBluetooth.stopServer()
+            }
         }
     }
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -61,6 +72,13 @@ class PairlyService : Service() {
             IntentFilter(Intent.ACTION_BATTERY_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        // A system broadcast, so the receiver must be exported to get it.
+        ContextCompat.registerReceiver(
+            this,
+            bluetoothReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_EXPORTED,
+        )
         scope.launch { Pairly.start(applicationContext) }
     }
 
@@ -71,6 +89,7 @@ class PairlyService : Service() {
     override fun onDestroy() {
         getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback)
         unregisterReceiver(batteryReceiver)
+        unregisterReceiver(bluetoothReceiver)
         scope.cancel()
         Pairly.stop()
         multicastLock?.release()

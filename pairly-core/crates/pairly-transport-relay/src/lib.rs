@@ -456,6 +456,7 @@ impl Listener {
                         .send(TransportEvent::Incoming {
                             stream: Box::new(stream),
                             transport: TransportKind::Relay,
+                            remote: None,
                         })
                         .await;
                     return Ok(());

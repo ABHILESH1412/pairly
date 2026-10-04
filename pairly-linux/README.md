@@ -86,6 +86,21 @@ one. swaync advertises inline replies even with `"notification-inline-replies": 
 config, so pairlyd reads that setting and uses a small reply window instead. Change it to
 `true` (then `swaync-client -R` and `systemctl --user restart pairlyd`) for the inline field.
 
+### Bluetooth
+
+With no network (or Wi-Fi off), Pairly reaches a paired phone over Bluetooth, as long as the
+phone and PC are also *paired in Bluetooth settings* once:
+
+```sh
+bluetoothctl     # then: agent on, default-agent, pairable on, discoverable on
+```
+
+On the phone, open **Settings → Connected devices → Pair new device**, pick this PC and confirm
+the code on both (type `yes` in `bluetoothctl`). Then run `discoverable off`, and in the Pairly
+app tap **Allow Bluetooth**. Pairly's own encrypted pairing still runs on top. Bluetooth is
+slow (about 200 KB/s), so Pairly moves back to Wi-Fi as soon as it's available.
+`[bluetooth] enabled = false` turns it off.
+
 ### Firewall
 
 Phones find the PC with mDNS and connect over UDP 47100. With firewalld (default on

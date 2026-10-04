@@ -21,6 +21,7 @@ pairly-dbus = { path = "crates/pairly-dbus" }
 pairly-transport-bt = { path = "crates/pairly-transport-bt" }
 # Third party
 anyhow = "1"
+bluer = { version = "0.17", features = ["bluetoothd", "rfcomm"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 ksni = "0.3"

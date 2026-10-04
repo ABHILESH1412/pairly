@@ -27,6 +27,13 @@ The phone and PC must be able to reach each other directly:
 - Some routers isolate Wi-Fi clients from each other. If `adb shell ping <pc-ip>` fails,
   use USB tethering or the phone's hotspot until the relay lands (Phase 8).
 
+## Bluetooth
+
+Without a network, the app connects to a paired PC over Bluetooth RFCOMM. Pair the phone with
+the PC in Android's Bluetooth settings first, then tap **Allow Bluetooth** in Pairly (Android
+12+ asks for "Nearby devices"). The phone dials the PC; the PC's address arrives with its
+identity while you are on the same network.
+
 ## Sharing
 
 - **To the PC:** share from any app and pick **Pairly** (files, links, text), or use

@@ -11,3 +11,8 @@ workspace = true
 
 [dependencies]
 pairly-core.workspace = true
+async-trait = "0.1"
+bluer.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tracing.workspace = true

@@ -15,6 +15,9 @@
 //! [clipboard]
 //! auto = true                 # send this PC's clipboard on every copy
 //!
+//! [bluetooth]
+//! enabled = true              # reach bonded devices over Bluetooth when there is no network
+//!
 //! [relay]
 //! address = "pairly-relay://TOKEN@relay.example.com:47200/PIN"   # printed by pairly-relay
 //!
@@ -54,6 +57,14 @@ struct File {
     share: ShareFile,
     #[serde(default)]
     relay: RelayFile,
+    #[serde(default)]
+    bluetooth: BluetoothFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BluetoothFile {
+    enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -111,6 +122,7 @@ pub struct Config {
     pub share: crate::share::Settings,
     /// The relay for reaching devices over the internet; paired phones learn it from us.
     pub relay: Option<String>,
+    pub bluetooth: bool,
 }
 
 impl Config {
@@ -141,6 +153,7 @@ impl Config {
         }
         Ok(Self {
             relay,
+            bluetooth: file.bluetooth.enabled.unwrap_or(true),
             name: file.name.unwrap_or_else(hostname),
             device_type,
             data_dir: file

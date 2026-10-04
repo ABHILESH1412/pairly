@@ -29,4 +29,6 @@ pub use plugin::{Plugin, PluginCtx};
 pub use qr::QrInvite;
 pub use registry::Registry;
 pub use session::{OutboundPacket, Priority, SessionConfig};
-pub use transport::{PairedPeer, PeerCandidate, Transport, TransportEvent, TransportKind};
+pub use transport::{
+    KnownAddresses, PairedPeer, PeerCandidate, Transport, TransportEvent, TransportKind,
+};

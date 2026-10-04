@@ -1,5 +1,6 @@
 //! The byte-stream transport abstraction. Transports know nothing about crypto or packets.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use async_trait::async_trait;
@@ -50,6 +51,9 @@ impl TransportKind {
     }
 }
 
+/// Pairly's RFCOMM service class UUID (the same on every platform).
+pub const BLUETOOTH_SERVICE_UUID: &str = "9666e1eb-cdfa-4e10-aab2-648e9e26ac5d";
+
 /// A reliable, ordered byte stream.
 pub trait Duplex: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> Duplex for T {}
@@ -84,6 +88,8 @@ pub struct PairedPeer {
     pub relays: Vec<String>,
     /// The link the session currently uses, if connected.
     pub link: Option<TransportKind>,
+    /// Its Bluetooth address, if known.
+    pub bluetooth: Option<String>,
 }
 
 pub enum TransportEvent {
@@ -93,6 +99,9 @@ pub enum TransportEvent {
     Incoming {
         stream: BoxDuplex,
         transport: TransportKind,
+        /// Where it came from, if the transport knows something worth remembering (the
+        /// Bluetooth address of a phone that dialed us).
+        remote: Option<String>,
     },
 }
 
@@ -130,4 +139,91 @@ pub trait Transport: Send + Sync + 'static {
     /// The set of paired devices, or how they are connected, changed.
     fn peers_changed(&self, _peers: &[PairedPeer]) {}
     async fn stop(&self);
+}
+
+/// For transports without discovery (Bluetooth): turns "these paired devices have these
+/// addresses" into `Discovered`/`Lost` events for what changed since last time.
+#[derive(Debug)]
+pub struct KnownAddresses {
+    kind: TransportKind,
+    offered: HashMap<String, DeviceId>,
+}
+
+impl KnownAddresses {
+    pub fn new(kind: TransportKind) -> Self {
+        Self {
+            kind,
+            offered: HashMap::new(),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        now: impl IntoIterator<Item = (String, DeviceId)>,
+    ) -> Vec<TransportEvent> {
+        let now: HashMap<String, DeviceId> = now.into_iter().collect();
+        let candidate = |address: &str, id: DeviceId| PeerCandidate {
+            transport: self.kind,
+            address: address.to_owned(),
+            device_id: Some(id),
+            name: None,
+        };
+        let mut events: Vec<TransportEvent> = self
+            .offered
+            .iter()
+            .filter(|(a, id)| now.get(*a) != Some(id))
+            .map(|(a, id)| TransportEvent::Lost(candidate(a, *id)))
+            .collect();
+        events.extend(
+            now.iter()
+                .filter(|(a, id)| self.offered.get(*a) != Some(id))
+                .map(|(a, id)| TransportEvent::Discovered(candidate(a, *id))),
+        );
+        self.offered = now;
+        events
+    }
+
+    /// Everything offered so far, as `Lost` events (the transport is going away).
+    pub fn clear(&mut self) -> Vec<TransportEvent> {
+        self.update([])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pairly_crypto::IdentityKeypair;
+
+    use super::*;
+
+    fn summary(events: &[TransportEvent]) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = events
+            .iter()
+            .map(|e| match e {
+                TransportEvent::Discovered(c) => (true, c.address.clone()),
+                TransportEvent::Lost(c) => (false, c.address.clone()),
+                TransportEvent::Incoming { .. } => unreachable!(),
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn known_addresses_report_only_changes() {
+        let (a, b) = (
+            IdentityKeypair::generate().device_id(),
+            IdentityKeypair::generate().device_id(),
+        );
+        let mut known = KnownAddresses::new(TransportKind::Bluetooth);
+        let ev = known.update([("AA".to_owned(), a)]);
+        assert_eq!(summary(&ev), vec![(true, "AA".to_owned())]);
+        assert!(known.update([("AA".to_owned(), a)]).is_empty());
+        let ev = known.update([("AA".to_owned(), a), ("BB".to_owned(), b)]);
+        assert_eq!(summary(&ev), vec![(true, "BB".to_owned())]);
+        let ev = known.clear();
+        assert_eq!(
+            summary(&ev),
+            vec![(false, "AA".to_owned()), (false, "BB".to_owned())]
+        );
+    }
 }
