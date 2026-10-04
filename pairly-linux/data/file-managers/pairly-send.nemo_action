@@ -2,6 +2,6 @@
 Name=Send to Device (Pairly)
 Comment=Send the selected files to a paired device
 Exec=pairly-gtk --send %F
-Icon-Name=dev.pairly.Pairly
+Icon-Name=io.github.abhilesh1412.Pairly
 Selection=notnone
 Extensions=nodirs;

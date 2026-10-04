@@ -1167,7 +1167,12 @@ no Android SDK/NDK):**
 >
 > Not done / limits:
 > - **The mobile-data test needs the VPS** (follow the relay README, then put the address in
->   `config.toml`).
+>   `config.toml`). Parked (2026-10-05): no free VPS was available (Oracle's free tier was
+>   out of capacity). Hosting the relay on the laptop instead needs a way in from the
+>   internet:
+>   - Tailscale, ZeroTier or playit.gg would work.
+>   - Cloudflare Tunnel would work only with a WebSocket mode for the relay, plus a domain.
+>   - Revisit later.
 > - Pairing still needs both devices on the same network (or a QR code reachable on it). The
 >   relay is only used for paired devices.
 > - Hole punching and UnifiedPush (8b) are not started.
@@ -1280,6 +1285,141 @@ no Android SDK/NDK):**
 
 ### Phase 10: More KDE Connect features
 
+> **Status: done (2026-10-04).** Verified with the moto g85 on Hyprland:
+> - **Media:**
+>   - PC players (Brave, VLC) appear on the phone as a media notification with lock-screen and
+>     quick-settings controls, and play, pause and next work;
+>   - the phone's player (YouTube) appears on the PC in GTK "Now Playing", `playerctl` and
+>     Waybar, and is controllable from there.
+> - **Touchpad and keyboard:** pointer, two-finger scroll, tap and two-finger tap clicks, drag
+>   with the Left button, typing, and special keys with modifiers.
+> - **Presenter:** next and previous from buttons and the volume keys.
+> - **Commands:** listed on the phone, confirmed, run on the PC with a notification, and the
+>   result reported back.
+> - **SMS:** conversations and threads load in the GTK Messages window, and replies sent from the
+>   PC are delivered.
+>
+> What was built:
+> - **Plugins** (`pairly-plugins`):
+>   - `media` (players, artwork once per track, commands);
+>   - `telephony` (ringing, talking, missed, ended);
+>   - `sms` (request and answer by id, with queries on a blocking thread, plus send and live new
+>     messages);
+>   - `command` (the PC publishes a list, the phone runs only listed ids, and the PC reports
+>     done);
+>   - `input` (pointer motion is unreliable, buttons and keys are reliable).
+>   - Covered by end-to-end tests: `tests/media.rs` and `tests/phone_features.rs`.
+> - **Linux:**
+>   - MPRIS watcher (debounced; skips `playerctld` and our own mirrors) and command execution;
+>   - each phone's player is published as `org.mpris.MediaPlayer2.pairly_<id>`, with artwork
+>     cached under `~/.cache/pairly`;
+>   - calls pause and resume playing players (`[telephony] pause_media`);
+>   - a commands store in `commands.json`, with a 60 s timeout and a notification per run;
+>   - remote input through the Wayland virtual pointer and virtual keyboard, with an XKB keymap
+>     built on the fly so any character types correctly whatever the PC's layout.
+> - **GTK:**
+>   - device page with a status pill and an icon tile grid;
+>   - "Now Playing" row;
+>   - Messages window (conversation list, chat bubbles, compose bar, live updates, load earlier,
+>     new message);
+>   - Commands dialog with suggestions.
+> - **Android:**
+>   - `PhoneMedia` (MediaSessionManager through notification access) and `PcPlayers` (a
+>     MediaSession with a MediaStyle notification and Volume −/+ custom actions);
+>   - `Calls` (PhoneStateListener with the number and contact name);
+>   - `Sms` (reads the SMS store, sends with SmsManager, and watches the store for new
+>     messages, so no RECEIVE_SMS is needed);
+>   - touchpad, keyboard and presenter screens;
+>   - device screens with an icon grid and a status pill (Material icons);
+>   - `NodeSetup` (one handler per feature) replaces the ever-growing `start_node`.
+>
+> Lessons:
+> - **Android 13+ volume keys:** they only reach a remote MediaSession if the app is a full
+>   MediaRouter2 route (as Cast is), so the PC player gets Volume −/+ buttons instead.
+> - **Media buttons:** they go only to a session that is *playing*.
+> - **Icons:** `paper-plane-symbolic` isn't in Adwaita; use `mail-send-symbolic`.
+>
+> Not done / limits:
+> - **Remote input on other desktops:** it needs the wlroots virtual input protocols
+>   (Hyprland, Sway, river). GNOME and KDE need the RemoteDesktop portal (libei), and there is no
+>   `uinput` fallback yet.
+> - **SMS:** text only (no MMS or group media). A failed send is only reported on the phone.
+> - **Calls:** a call can't be answered or rejected from the PC.
+> - **Stretch items:** contacts sync and file browsing are not done.
+>
+> **Follow-up: limits lifted (2026-10-04).** Everything below is built.
+> - **Remote input everywhere:** backends are tried in this order:
+>   1. Wayland virtual input (wlroots);
+>   2. the RemoteDesktop portal (GNOME and KDE; keysyms and a restore token);
+>   3. `uinput` (any desktop, US layout).
+>   `[input] backend` forces one. `uinput` was verified on Hyprland. The portal backend can't
+>   be exercised on Hyprland and is untested.
+> - **Calls:**
+>   - the PC notification has Answer, Speaker, Reject and Hang Up (`telephony` control, via
+>     ANSWER_PHONE_CALLS);
+>   - "Contacts & Calls" dials through the phone.
+>   - Verified.
+> - **Contacts:** the `contacts` plugin. The PC lists the phone's contacts and saves them as
+>   vCards in `~/.local/share/pairly/contacts/<id>.vcf`. Verified.
+> - **File browsing:** the `files` plugin:
+>   - list, read and write in 512 KiB chunks, plus delete, mkdir and rename;
+>   - every path is resolved under the shared root;
+>   - Android shares its storage with "All files access";
+>   - GTK has a Browse Files window with download, upload by button or drag, new folder,
+>     rename and delete.
+>   - Downloads verified.
+> - **MMS:**
+>   - reading: picture and group messages from `mms-sms/conversations`, with participants and
+>     attachments; parts are fetched in 768 KiB chunks; GTK shows pictures inline and sender
+>     names in groups;
+>   - sending: a hand-built m-send-req PDU (multipart/related with a SMIL slide, as phones'
+>     own apps send) through `SmsManager.sendMultimediaMessage`;
+>   - pictures are shrunk to fit: the PC re-encodes big photos to at most 600 KB, and the phone
+>     re-encodes them to the carrier's limit (Airtel: 300 KB);
+>   - the result (from the MMS service and the carrier's m-send-conf) comes back to the PC as
+>     `sms.status` and is shown as a notification.
+>   - **Update (2026-10-04):** picture messages still didn't arrive on Airtel. Sending them
+>     is shelved: the GTK attach button is hidden (the code stays). Receiving pictures works.
+> - **New message:** pick people from the phone's contacts (several make a group message) or
+>   type a number.
+> - **Lock and power off:** the `power` plugin. Android's `PairlyAccessibility` service locks
+>   with GLOBAL_ACTION_LOCK_SCREEN, and powers off or restarts by opening the power menu and
+>   pressing its button. GTK has Lock Phone and Power Off tiles. The other direction works too:
+>   the phone's PC screen has Lock and Power off (with Restart) tiles. Linux locks with
+>   `loginctl lock-session <display session>` and powers off with `systemctl`, which polkit
+>   allows for the active user. `[power] from_phone = false` refuses all of these.
+> - **Phone → PC clipboard without a button:** Android doesn't let background apps read the
+>   clipboard. Instead:
+>   - the same accessibility service notices a copy (the system "Copied" overlay, or a "Copy"
+>     button);
+>   - it briefly opens the invisible `ClipboardActivity`, which reads the clipboard and sends it.
+>     A bound accessibility service may start activities from the background.
+>   - Clips that came from a PC are marked `EXTRA_IS_REMOTE_DEVICE` (no overlay), and are
+>     remembered so they aren't sent back.
+>   - There is a setting to turn this off.
+> - **Chat notifications:** chat apps keep one notification per conversation and add each
+>   message to it. The phone now forwards every message in it (MessagingStyle, up to 15),
+>   with sender names in groups and "You:" for the owner's replies. Before, only the latest
+>   line (EXTRA_TEXT) was forwarded.
+> - **Answer on speaker:** Telecom ignores other apps' `setCommunicationDevice` during a
+>   cellular call ("ignoring communication device change"). The accessibility service now
+>   presses the dialer's Speaker button instead, through its Audio menu when a headset is
+>   connected. The audio-manager request remains as the fallback.
+> - **Copy without a flash:** the accessibility service takes the copied text from the
+>   screen, so nothing opens. It uses the text selected when "Copy" was pressed (selection
+>   events; never password fields), or, with the keyboard closed, the "Copied" overlay's
+>   preview (`text_preview`). With the keyboard open, Android 16 shrinks the overlay to an
+>   icon with no preview. The invisible activity is
+>   kept only for previews that aren't the whole clip (500+ characters, hidden passwords, no
+>   preview), and for "Copy" buttons with no overlay.
+> - Verified on the moto g85 (2026-10-05): all the chat messages show; answering on speaker
+>   works; copying without a flash works, both from the overlay preview (keyboard closed) and
+>   from the selection (keyboard open).
+> - **Notification dismissal:** closing a phone's notification on the PC still clears it on
+>   the phone. It no longer does when the popup closed because a button or reply was used:
+>   swaync reports that as "dismissed by user", which used to delete the WhatsApp notification
+>   on the phone. `[notifications] dismiss_on_phone = false` turns the sync off.
+
 Build each plugin separately. Each one is about a week of work.
 
 1. **media:** MPRIS ↔ MediaSession. Show the PC's player (play/pause, next, seek, volume, artwork) on the
@@ -1303,6 +1443,54 @@ Build each plugin separately. Each one is about a week of work.
 
 ### Phase 11: Hardening and security review
 
+> **Status: round 1 done (2026-10-05); see [`docs/security.md`](docs/security.md).**
+> - **Rekeying (item 3):**
+>   - in-band: the `REKEY_AFTER` bit (0x80) on the last frame under the old key;
+>   - each direction every 1 GiB or 1 hour;
+>   - `SessionCipher` gains `rekey_outgoing` and `rekey_incoming`.
+> - **Limits and backpressure (item 3):**
+>   - at most 16 inbound connections in their handshake at once;
+>   - at most 3 pairing prompts waiting at once, and a 10 s cooldown after a declined or
+>     ignored request;
+>   - outgoing queues capped: 512 unreliable packets per priority (then dropped), and 4,096
+>     reliable packets awaiting acks (then a `Backlog` error).
+> - **Relay padding (item 4):**
+>   - frames on relay links padded to 256-byte steps, inside the encryption (the `PADDED`
+>     bit, 0x40, with a length prefix);
+>   - on by default, `[relay] padding` on the PC;
+>   - what the relay can see is documented.
+> - **Fuzzing (item 2):** `pairly-core/fuzz` with five targets: envelope and all packet bodies,
+>   handshake, relay JOIN, text inputs (QR, relay and Bluetooth addresses, received file
+>   names), and the file-browsing path escape check. One hour in total (12 minutes per
+>   target), about 141 million inputs, no crashes.
+> - **Review fixes (item 5):**
+>   - the Bluetooth address is recorded only after the identity exchange (an IK replay could
+>     otherwise set it);
+>   - received file names can no longer start with a hidden dot (`". .x"`);
+>   - the PC's data and cache folders are made 0700.
+> - **`cargo deny` (item 6):** `deny.toml` in both workspaces. No advisories, permissive
+>   licences (plus MPL-2.0), crates.io only.
+> - **StrictMode (item 6):**
+>   - on in debug builds;
+>   - the message-store watcher was moved off the main thread;
+>   - settings files are preloaded in the background.
+>
+> - **Encrypted secrets (item 1, instead of SQLCipher, as the user chose):**
+>   - `pair_secret` and the relay address are sealed with ChaCha20-Poly1305;
+>   - the key is derived from the identity key (`FieldKey`);
+>   - a plaintext registry is migrated in place (schema 4);
+>   - pairings that can't be opened (a lost identity) are dropped at start, with a warning.
+> - **The Linux identity moved into the keyring** (Secret Service over zbus, "plain" session):
+>   - `identity.key` is deleted once the keyring returns the same key;
+>   - without a keyring, a new install uses the file;
+>   - with devices paired but no keyring, pairlyd refuses to start.
+>   - Verified on the PC: same device ID, file gone, secret sealed (61 bytes). On the phone:
+>     sealed on first start, same ID, reconnected.
+>
+> Left:
+> - **Item 7:** the 24 h battery measurement, which needs the phone left idle and connected.
+>   Parked (2026-10-05) at the user's request.
+
 1. Switch the registry to **SQLCipher**, keyed from Secret Service (Linux) or the Keystore-wrapped key
    (Android).
 2. Run `cargo-fuzz` targets on the frame decoder, CBOR envelope decoding and every packet body parser.
@@ -1320,6 +1508,39 @@ Build each plugin separately. Each one is about a week of work.
 ---
 
 ### Phase 12: Packaging and release
+
+> **Status: prepared (2026-10-05); publishing is the user's step ([docs/releasing.md](docs/releasing.md)).**
+> - **Decisions:**
+>   - licence: GPL-3.0-or-later (`LICENSE`, and `license` on every crate);
+>   - app ID `io.github.abhilesh1412.pairly` on Android (`applicationId`; the Kotlin packages
+>     stay `dev.pairly.*`), and `io.github.abhilesh1412.Pairly` on Linux (desktop file,
+>     metainfo, GTK app, D-Bus `…Pairly.Daemon` / `…Pairly.Daemon1`);
+>   - the keyring attribute stays `dev.pairly`, so the stored identity is found.
+> - **Linux:**
+>   - AppStream metainfo (validated);
+>   - `make install` with `DESTDIR` and `PREFIX` for packages;
+>   - `packaging/arch/PKGBUILD` and `pairly.install`, built with `makepkg` from a local
+>     tarball: a 10 MB package with the expected file layout. namcap's dependency notes are
+>     applied (`libgcc`, `hicolor-icon-theme`).
+>   - **Lesson:** the first `makepkg` test ran in `/tmp`, which is RAM-backed tmpfs here. The
+>     build output filled RAM and froze the laptop. Build in a disk folder.
+> - **Android:**
+>   - release signing from `keystore.properties` (gitignored), falling back to the debug key
+>     for local tests only;
+>   - R8 keep rules for the UniFFI package (`dev.pairly.core.ffi`);
+>   - the minified release APK was checked on the phone (the node starts).
+> - **Release tooling:**
+>   - `scripts/release.sh` checks versions, a clean tree, the tag and a non-debug signature;
+>     builds the APK and its SHA-256; and makes the AUR files with GitHub's tarball checksum;
+>   - a root `README.md`.
+> - **Keyring at login:** pairlyd can start before PAM unlocks the login keyring, and before the
+>   desktop can show a prompt (seen after a reboot: two failed starts, then success). It now
+>   waits up to 60 s for the unlock before prompting.
+> - **Left for the user:**
+>   - create the GitHub repo and push;
+>   - create and back up the release key;
+>   - tag v0.1.0, run the script, publish the release and the AUR package.
+> - **Not done:** F-Droid metadata, Flatpak, `.deb`.
 
 See [section 14](#14-packaging-and-release).
 
@@ -1383,13 +1604,13 @@ See [section 14](#14-packaging-and-release).
 
 Decide these when you reach the relevant phase. Each one has a default.
 
-1. **App ID / reverse-DNS name:** default placeholder `dev.pairly`. Change it before the first release.
+1. **App ID / reverse-DNS name:** decided (2026-10-05): `io.github.abhilesh1412.pairly` (Android),
+   `io.github.abhilesh1412.Pairly` (Linux).
 2. **UI builder for GTK:** relm4 widget macros (default) or Blueprint files with plain gtk4-rs.
 3. **DI on Android:** manual (default) or Hilt.
 4. **Default relay:** your VPS (default), or no default with users entering their own.
 5. **KDE Connect compatibility bridge:** not in v1. Revisit after Phase 10.
-6. **License:** GPL-3.0 (matching the ecosystem, and needed if code is ever shared with KDE Connect) or
-   MIT/Apache-2.0.
+6. **License:** decided (2026-10-05): GPL-3.0-or-later.
 
 ---
 

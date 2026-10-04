@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.abhilesh1412.Pairly</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Pairly</name>
+  <summary>Connect your Android phone and your PC</summary>
+  <description>
+    <p>
+      Pairly links your Android phone and your Linux PC over Wi-Fi, Bluetooth or an optional
+      relay, with everything end-to-end encrypted.
+    </p>
+    <ul>
+      <li>Phone notifications on the PC, with replies and actions</li>
+      <li>Texts: read and send SMS from the PC</li>
+      <li>Calls: see who is calling, answer, reject or hang up from the PC</li>
+      <li>Send files, links and text both ways, and browse the phone's storage</li>
+      <li>Shared clipboard in both directions</li>
+      <li>Media controls for players on either device</li>
+      <li>Use the phone as a touchpad, keyboard or presenter remote</li>
+      <li>Run the PC's commands, lock it or power it off from the phone</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.abhilesh1412.Pairly.desktop</launchable>
+  <url type="homepage">https://github.com/ABHILESH1412/pairly</url>
+  <url type="bugtracker">https://github.com/ABHILESH1412/pairly/issues</url>
+  <developer id="io.github.abhilesh1412">
+    <name>Abhilesh Singh</name>
+  </developer>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+  <keywords>
+    <keyword>phone</keyword>
+    <keyword>android</keyword>
+    <keyword>notifications</keyword>
+    <keyword>clipboard</keyword>
+    <keyword>sms</keyword>
+  </keywords>
+  <provides>
+    <binary>pairly-gtk</binary>
+    <binary>pairlyd</binary>
+    <binary>pairly</binary>
+    <dbus type="user">io.github.abhilesh1412.Pairly.Daemon</dbus>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-05">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

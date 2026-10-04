@@ -32,6 +32,8 @@ pub enum CoreError {
     PairingDisabled,
     #[error("peer does not accept {0:?} packets")]
     Unsupported(String),
+    #[error("too many packets are waiting to be sent to {0}")]
+    Backlog(DeviceId),
     #[error("no such {0}")]
     NotFound(&'static str),
     #[error("node is shut down")]

@@ -1,4 +1,4 @@
 [D-BUS Service]
-Name=dev.pairly.Daemon
+Name=io.github.abhilesh1412.Pairly.Daemon
 Exec=@bindir@/pairlyd
 SystemdService=pairlyd.service

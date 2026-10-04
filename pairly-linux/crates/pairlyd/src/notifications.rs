@@ -53,6 +53,8 @@ pub struct Settings {
     /// App names (as sent by the app, case-insensitive) never forwarded.
     pub ignore_apps: Vec<String>,
     pub reply: ReplyMode,
+    /// Closing a mirrored notification here clears it on the phone too.
+    pub dismiss_on_phone: bool,
 }
 
 #[derive(Debug)]
@@ -129,7 +131,7 @@ pub async fn notify(
             &(
                 "Pairly",
                 0u32,
-                "dev.pairly.Pairly",
+                "io.github.abhilesh1412.Pairly",
                 summary,
                 body,
                 actions,
@@ -193,6 +195,9 @@ struct Mirror {
     peer: DeviceId,
     id: String,
     title: String,
+    /// A button or reply was used: the server closes the popup afterwards, which isn't a
+    /// dismissal (the phone's app updates or clears its notification itself).
+    answered: bool,
 }
 
 struct Mirrors {
@@ -200,6 +205,7 @@ struct Mirrors {
     plugin: Arc<NotificationPlugin>,
     markup: bool,
     inline_reply: bool,
+    dismiss_on_phone: bool,
     by_key: HashMap<(DeviceId, String), u32>,
     by_server: HashMap<u32, Mirror>,
 }
@@ -269,6 +275,7 @@ impl Mirrors {
                         peer: from.id,
                         id: n.id.clone(),
                         title: n.title.clone(),
+                        answered: false,
                     },
                 );
             }
@@ -295,10 +302,11 @@ impl Mirrors {
         }
     }
 
-    fn on_action(&self, server_id: u32, key: &str) {
-        let Some(m) = self.by_server.get(&server_id) else {
+    fn on_action(&mut self, server_id: u32, key: &str) {
+        let Some(m) = self.by_server.get_mut(&server_id) else {
             return;
         };
+        m.answered = true;
         if let Some(action) = key.strip_prefix("a:") {
             let _ = self.plugin.request_action(m.peer, &m.id, action);
         } else if key == "reply" {
@@ -306,8 +314,9 @@ impl Mirrors {
         }
     }
 
-    fn on_reply(&self, server_id: u32, text: &str) {
-        if let Some(m) = self.by_server.get(&server_id) {
+    fn on_reply(&mut self, server_id: u32, text: &str) {
+        if let Some(m) = self.by_server.get_mut(&server_id) {
+            m.answered = true;
             match self.plugin.request_reply(m.peer, &m.id, text) {
                 Ok(()) => info!(peer = %m.peer, "inline reply sent"),
                 Err(e) => warn!(peer = %m.peer, error = %e, "inline reply failed"),
@@ -320,8 +329,9 @@ impl Mirrors {
             return;
         };
         self.by_key.remove(&(m.peer, m.id.clone()));
-        // Only a deliberate dismissal propagates: an expired popup must not clear the phone.
-        if reason == CLOSED_BY_USER {
+        // Only a deliberate dismissal propagates: an expired popup, or one closed because a
+        // button was used, must not clear the phone.
+        if reason == CLOSED_BY_USER && !m.answered && self.dismiss_on_phone {
             let _ = self.plugin.request_dismiss(m.peer, &m.id);
         }
     }
@@ -387,6 +397,7 @@ pub async fn run(
         plugin: plugin.clone(),
         markup: caps.iter().any(|c| c == "body-markup"),
         inline_reply,
+        dismiss_on_phone: settings.dismiss_on_phone,
         by_key: HashMap::new(),
         by_server: HashMap::new(),
     };

@@ -1,13 +1,16 @@
 package dev.pairly.android.device
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PersistableBundle
 import dev.pairly.android.Pairly
 import dev.pairly.android.R
 import dev.pairly.core.ffi.BatteryData
@@ -20,8 +23,15 @@ class DeviceFeatures(context: Context) : DeviceHandler {
 
     override fun setClipboard(fromId: String, fromName: String, text: String) {
         main.post {
-            context.getSystemService(ClipboardManager::class.java)
-                ?.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.app_name), text))
+            ClipboardSync.last = text
+            val clip = ClipData.newPlainText(context.getString(R.string.app_name), text)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Tells the system it came from another device: no "Copied" overlay for it.
+                clip.description.extras = PersistableBundle().apply {
+                    putBoolean(ClipDescription.EXTRA_IS_REMOTE_DEVICE, true)
+                }
+            }
+            context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
             Pairly.say(context.getString(R.string.clipboard_received, fromName))
         }
     }

@@ -1,14 +1,22 @@
 //! `pairlyd`: headless daemon, normally run as a systemd user service. It runs the Pairly node
-//! with the Linux platform adapters and serves `dev.pairly.Daemon1` on the session bus.
+//! with the Linux platform adapters and serves `io.github.abhilesh1412.Pairly.Daemon1` on the session bus.
 #![forbid(unsafe_code)]
 
 mod battery;
 mod clipboard;
+mod commands;
 mod config;
+mod contacts;
 mod dbus;
+mod input;
+mod keyring;
+mod media;
 mod notifications;
 mod platform;
+mod power;
 mod share;
+mod sms;
+mod telephony;
 mod tray;
 
 use std::path::PathBuf;
@@ -18,13 +26,20 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ksni::TrayMethods;
 use pairly_core::{NodeConfig, NodeEvent, PairlyNode, Registry};
-use pairly_crypto::FileKeyStore;
+use pairly_crypto::{KeyStore, MemoryKeyStore};
 use pairly_plugins::battery::{BatteryPlugin, BatteryState};
 use pairly_plugins::clipboard::ClipboardPlugin;
+use pairly_plugins::command::CommandPlugin;
+use pairly_plugins::contacts::{ContactsHost, ContactsPlugin};
+use pairly_plugins::files::{FilesHost, FilesPlugin};
 use pairly_plugins::findmy::FindMyPlugin;
+use pairly_plugins::input::InputPlugin;
+use pairly_plugins::media::MediaPlugin;
 use pairly_plugins::notification::NotificationPlugin;
 use pairly_plugins::ping::PingPlugin;
 use pairly_plugins::share::SharePlugin;
+use pairly_plugins::sms::SmsPlugin;
+use pairly_plugins::telephony::TelephonyPlugin;
 use pairly_transport_bt::BluetoothTransport;
 use pairly_transport_lan::{LanConfig, LanTransport};
 use pairly_transport_relay::{RelayConfig, RelayTransport};
@@ -51,7 +66,24 @@ pub struct Features {
     pub battery: Arc<BatteryPlugin>,
     pub findmy: Arc<FindMyPlugin>,
     pub share: Arc<ShareService>,
+    pub media: Arc<MediaPlugin>,
+    pub media_host: Arc<media::LinuxMedia>,
+    pub sms: Arc<SmsPlugin>,
+    pub commands: Arc<commands::Commands>,
+    pub command: Arc<CommandPlugin>,
+    pub telephony: Arc<TelephonyPlugin>,
+    pub contacts: Arc<ContactsPlugin>,
+    pub power: Arc<pairly_plugins::power::PowerPlugin>,
+    pub files: Arc<FilesPlugin>,
 }
+
+/// The PC doesn't share its files; it only browses phones.
+struct NoFiles;
+impl FilesHost for NoFiles {}
+
+/// The PC has no contacts of its own; it only asks phones for theirs.
+struct NoContacts;
+impl ContactsHost for NoContacts {}
 
 #[derive(Parser)]
 #[command(version, about = "Pairly daemon")]
@@ -71,10 +103,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let config = Config::load(args.config.as_deref())?;
     info!(name = %config.name, data = %config.data_dir.display(), bus = %config.bus_name, "starting");
+    private_dir(&config.data_dir);
 
     let (platform, platform_events) = LinuxPlatform::new();
     let mut node_config = NodeConfig::new(&config.name, config.device_type);
     node_config.relay.clone_from(&config.relay);
+    node_config.relay_padding = config.relay_padding;
     match &config.relay {
         Some(relay) => {
             info!(relay = ?relay.parse::<pairly_transport_relay::RelayAddr>().ok(), "using a relay")
@@ -97,11 +131,14 @@ async fn main() -> Result<()> {
         None
     };
     let qr_timeout = node_config.qr_timeout;
+    let registry =
+        Registry::open(&config.data_dir.join("registry.db")).context("opening registry")?;
+    let identity = keyring::identity(&config.data_dir, registry.device_count()?).await?;
+    let keystore = MemoryKeyStore::new();
+    keystore.store(&identity)?;
     let mut builder = PairlyNode::builder(node_config)
-        .keystore(Arc::new(FileKeyStore::new(
-            config.data_dir.join("identity.key"),
-        )))
-        .registry(Registry::open(&config.data_dir.join("registry.db")).context("opening registry")?)
+        .keystore(Arc::new(keystore))
+        .registry(registry)
         .platform(platform.clone())
         // A PC stays in its devices' relay rooms all the time, so a phone away from home can
         // always reach it.
@@ -121,12 +158,39 @@ async fn main() -> Result<()> {
     }
     let (notification_host, notification_cmds) = LinuxNotificationHost::new();
     let (share_host, share_events) = LinuxShareHost::new();
+    let cache_dir = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        })
+        .join("pairly");
+    private_dir(&cache_dir);
+    let (media_host, media_events) = media::LinuxMedia::new(cache_dir.clone());
+    let (telephony_host, call_events) = telephony::LinuxTelephony::new();
+    let (sms_host, sms_events) = sms::LinuxSms::new();
+    let (commands, command_runs) = commands::Commands::load(&config.data_dir);
+    let command = CommandPlugin::new(commands.clone());
+    let telephony = TelephonyPlugin::new(telephony_host.clone());
+    telephony_host.set_plugin(&telephony);
+    commands.set_plugin(&command);
     let features = Features {
         notifications: NotificationPlugin::new(Arc::new(notification_host)),
         clipboard: ClipboardPlugin::new(platform.clone()),
         battery: BatteryPlugin::new(platform.clone()),
         findmy: FindMyPlugin::new(platform.clone()),
         share: ShareService::new(SharePlugin::new(Arc::new(share_host)), config.share.clone()),
+        media: MediaPlugin::new(media_host.clone()),
+        media_host,
+        sms: SmsPlugin::new(Arc::new(sms_host)),
+        commands: commands.clone(),
+        command,
+        telephony,
+        contacts: ContactsPlugin::new(Arc::new(NoContacts)),
+        power: pairly_plugins::power::PowerPlugin::new(Arc::new(power::LinuxPower {
+            allowed: config.power_from_phone,
+        })),
+        files: FilesPlugin::new(Arc::new(NoFiles)),
     };
     let node = builder
         .plugin(Arc::new(PingPlugin))
@@ -135,6 +199,17 @@ async fn main() -> Result<()> {
         .plugin(features.battery.clone())
         .plugin(features.findmy.clone())
         .plugin(features.share.plugin.clone())
+        .plugin(features.media.clone())
+        .plugin(features.telephony.clone())
+        .plugin(features.contacts.clone())
+        .plugin(features.power.clone())
+        .plugin(features.files.clone())
+        .plugin(features.sms.clone())
+        .plugin(features.command.clone())
+        .plugin(InputPlugin::new(Arc::new(input::LinuxInput::new(
+            config.input_backend,
+            config.data_dir.clone(),
+        ))))
         .start()
         .await
         .context("starting node")?;
@@ -147,6 +222,8 @@ async fn main() -> Result<()> {
                 node: node.clone(),
                 features: features.clone(),
                 qr_timeout,
+                data_dir: config.data_dir.clone(),
+                cache_dir: cache_dir.clone(),
             },
         )?
         .name(config.bus_name.as_str())?
@@ -180,6 +257,20 @@ async fn main() -> Result<()> {
     tokio::spawn(battery::watch(
         features.battery.clone(),
         platform.battery.clone(),
+    ));
+    tokio::spawn(telephony::run(
+        conn.clone(),
+        telephony_host,
+        call_events,
+        config.pause_media_for_calls,
+    ));
+    tokio::spawn(sms::run(conn.clone(), sms_events));
+    tokio::spawn(commands::run(conn.clone(), commands, command_runs));
+    tokio::spawn(media::run(
+        conn.clone(),
+        features.media_host.clone(),
+        features.media.clone(),
+        media_events,
     ));
     tokio::spawn(share::run(
         conn.clone(),
@@ -377,5 +468,16 @@ async fn ring_for(duration: std::time::Duration) {
             warn!("can't play the ring sound (pw-play missing?)");
             return;
         }
+    }
+}
+
+/// Our data (pairing secrets, contacts) and cache (message pictures) folders are readable only by
+/// this user, whatever the home folder's permissions.
+fn private_dir(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let made = std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)));
+    if let Err(e) = made {
+        warn!(dir = %dir.display(), error = %e, "can't make the folder private");
     }
 }

@@ -1,0 +1,14 @@
+post_install() {
+  cat <<'MSG'
+==> Start Pairly's background service for your user (once):
+      systemctl --user enable --now pairlyd
+==> Then open Pairly from the app menu and pair your phone
+    (the Android app is on https://github.com/ABHILESH1412/pairly/releases).
+==> LAN connections use UDP port 47100; if a firewall is on, allow it, e.g.:
+      sudo firewall-cmd --permanent --add-port=47100/udp --add-service=mdns && sudo firewall-cmd --reload
+MSG
+}
+
+post_upgrade() {
+  echo '==> Restart the service to use the new version: systemctl --user restart pairlyd'
+}

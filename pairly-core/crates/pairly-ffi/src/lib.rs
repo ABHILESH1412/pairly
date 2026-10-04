@@ -7,6 +7,8 @@
 //! dispatcher.
 
 mod bluetooth;
+mod media;
+mod phone;
 
 use std::fs::File;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -34,6 +36,13 @@ use tokio::task::AbortHandle;
 
 use bluetooth::ForeignBluetooth;
 pub use bluetooth::{BluetoothHandler, BluetoothSocket, bluetooth_service_uuid};
+pub use media::{MediaActionData, MediaHandler, PlayerData};
+pub use phone::{
+    AttachmentData, ButtonActionData, CallActionData, CallStateData, CommandData, CommandHandler,
+    ContactData, ContactsHandler, ConversationData, FilesHandler, KeyData, MessageData,
+    ModifiersData, MouseButtonData, OutgoingAttachmentData, PowerActionData, PowerHandler,
+    SmsHandler, TelephonyHandler,
+};
 
 uniffi::setup_scaffolding!();
 
@@ -615,78 +624,251 @@ pub struct Node {
     findmy: Arc<FindMyPlugin>,
     share: Arc<SharePlugin>,
     bluetooth: Arc<ForeignBluetooth>,
+    media: Arc<pairly_plugins::media::MediaPlugin>,
+    telephony: Arc<pairly_plugins::telephony::TelephonyPlugin>,
+    sms: Arc<pairly_plugins::sms::SmsPlugin>,
+    commands: Arc<pairly_plugins::command::CommandPlugin>,
+    input: Arc<pairly_plugins::input::InputPlugin>,
+    power: Arc<pairly_plugins::power::PowerPlugin>,
     forward: AbortHandle,
 }
 
-/// Start the node. Call [`Node::shutdown`] when the service stops.
-#[uniffi::export]
-pub async fn start_node(
+/// Everything Kotlin implements, collected before the node starts:
+/// `NodeSetup(options, secrets, listener)`, one call per feature handler, then [`NodeSetup::start`].
+#[derive(uniffi::Object)]
+pub struct NodeSetup {
+    parts: std::sync::Mutex<Parts>,
+}
+
+struct Parts {
     options: NodeOptions,
     secrets: Arc<dyn SecretStore>,
     listener: Arc<dyn EventListener>,
-    notifications: Arc<dyn NotificationHandler>,
-    device: Arc<dyn DeviceHandler>,
-    share: Arc<dyn ShareHandler>,
-    bluetooth: Arc<dyn BluetoothHandler>,
-) -> Result<Arc<Node>, PairlyError> {
-    init_logging();
-    let task = runtime().spawn(async move {
-        let data_dir = PathBuf::from(&options.data_dir);
-        let notifications =
-            NotificationPlugin::new(Arc::new(ForeignNotificationHost(notifications)));
-        let device_host = Arc::new(ForeignDeviceHost(device));
-        let clipboard = ClipboardPlugin::new(device_host.clone());
-        let battery = BatteryPlugin::new(device_host.clone());
-        let findmy = FindMyPlugin::new(device_host);
-        let share = SharePlugin::new(Arc::new(ForeignShareHost(share)));
-        let bluetooth = ForeignBluetooth::new(bluetooth);
-        let mut config = NodeConfig::new(options.name, options.kind.into());
-        config.relay = options.relay.filter(|r| !r.trim().is_empty());
-        let node = PairlyNode::builder(config)
-            .keystore(Arc::new(ForeignKeyStore(secrets)))
-            .registry(Registry::open(&data_dir.join("registry.db"))?)
-            .platform(Arc::new(FfiPlatform {
-                listener: listener.clone(),
-            }))
-            .transport(LanTransport::new(LanConfig {
-                port: options.lan_port,
-                mdns: true,
-            }))
-            // Only while a device has no LAN link: an idle relay connection costs battery.
-            .transport(RelayTransport::new(RelayConfig {
-                only_when_needed: true,
-            }))
-            .transport(bluetooth.clone())
-            .plugin(Arc::new(PingPlugin))
-            .plugin(notifications.clone())
-            .plugin(clipboard.clone())
-            .plugin(battery.clone())
-            .plugin(findmy.clone())
-            .plugin(share.clone())
-            .start()
-            .await?;
-        let mut events = node.subscribe();
-        let forward = tokio::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(event) => listener.on_event(event.into()),
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
-        Ok::<_, CoreError>(Node {
-            inner: node,
-            notifications,
-            clipboard,
-            battery,
-            findmy,
-            share,
-            bluetooth,
-            forward: forward.abort_handle(),
+    notifications: Option<Arc<dyn NotificationHandler>>,
+    device: Option<Arc<dyn DeviceHandler>>,
+    share: Option<Arc<dyn ShareHandler>>,
+    bluetooth: Option<Arc<dyn BluetoothHandler>>,
+    media: Option<Arc<dyn MediaHandler>>,
+    sms: Option<Arc<dyn SmsHandler>>,
+    commands: Option<Arc<dyn CommandHandler>>,
+    telephony: Option<Arc<dyn TelephonyHandler>>,
+    contacts: Option<Arc<dyn ContactsHandler>>,
+    files: Option<Arc<dyn FilesHandler>>,
+    power: Option<Arc<dyn PowerHandler>>,
+}
+
+fn missing(what: &str) -> PairlyError {
+    failed(format!("NodeSetup: no {what} handler"))
+}
+
+#[uniffi::export]
+impl NodeSetup {
+    #[uniffi::constructor]
+    pub fn new(
+        options: NodeOptions,
+        secrets: Arc<dyn SecretStore>,
+        listener: Arc<dyn EventListener>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            parts: std::sync::Mutex::new(Parts {
+                options,
+                secrets,
+                listener,
+                notifications: None,
+                device: None,
+                share: None,
+                bluetooth: None,
+                media: None,
+                sms: None,
+                commands: None,
+                telephony: None,
+                contacts: None,
+                files: None,
+                power: None,
+            }),
         })
+    }
+
+    pub fn notifications(&self, handler: Arc<dyn NotificationHandler>) {
+        self.lock().notifications = Some(handler);
+    }
+
+    pub fn device(&self, handler: Arc<dyn DeviceHandler>) {
+        self.lock().device = Some(handler);
+    }
+
+    pub fn share(&self, handler: Arc<dyn ShareHandler>) {
+        self.lock().share = Some(handler);
+    }
+
+    pub fn bluetooth(&self, handler: Arc<dyn BluetoothHandler>) {
+        self.lock().bluetooth = Some(handler);
+    }
+
+    pub fn media(&self, handler: Arc<dyn MediaHandler>) {
+        self.lock().media = Some(handler);
+    }
+
+    pub fn sms(&self, handler: Arc<dyn SmsHandler>) {
+        self.lock().sms = Some(handler);
+    }
+
+    pub fn commands(&self, handler: Arc<dyn CommandHandler>) {
+        self.lock().commands = Some(handler);
+    }
+
+    pub fn telephony(&self, handler: Arc<dyn TelephonyHandler>) {
+        self.lock().telephony = Some(handler);
+    }
+
+    pub fn contacts(&self, handler: Arc<dyn ContactsHandler>) {
+        self.lock().contacts = Some(handler);
+    }
+
+    pub fn files(&self, handler: Arc<dyn FilesHandler>) {
+        self.lock().files = Some(handler);
+    }
+
+    pub fn power(&self, handler: Arc<dyn PowerHandler>) {
+        self.lock().power = Some(handler);
+    }
+
+    /// Start the node. Call [`Node::shutdown`] when the service stops.
+    pub async fn start(&self) -> Result<Arc<Node>, PairlyError> {
+        init_logging();
+        let parts = {
+            let p = self.lock();
+            Parts {
+                options: p.options.clone(),
+                secrets: p.secrets.clone(),
+                listener: p.listener.clone(),
+                notifications: p.notifications.clone(),
+                device: p.device.clone(),
+                share: p.share.clone(),
+                bluetooth: p.bluetooth.clone(),
+                media: p.media.clone(),
+                sms: p.sms.clone(),
+                commands: p.commands.clone(),
+                telephony: p.telephony.clone(),
+                contacts: p.contacts.clone(),
+                files: p.files.clone(),
+                power: p.power.clone(),
+            }
+        };
+        let task = runtime().spawn(start(parts));
+        Ok(Arc::new(task.await.map_err(failed)??))
+    }
+}
+
+impl NodeSetup {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Parts> {
+        self.parts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+async fn start(parts: Parts) -> Result<Node, PairlyError> {
+    let Parts {
+        options,
+        secrets,
+        listener,
+        ..
+    } = parts;
+    let notifications = parts
+        .notifications
+        .ok_or_else(|| missing("notifications"))?;
+    let device = parts.device.ok_or_else(|| missing("device"))?;
+    let share = parts.share.ok_or_else(|| missing("share"))?;
+    let bluetooth = parts.bluetooth.ok_or_else(|| missing("bluetooth"))?;
+    let media = parts.media.ok_or_else(|| missing("media"))?;
+    let sms = parts.sms.ok_or_else(|| missing("sms"))?;
+    let commands = parts.commands.ok_or_else(|| missing("commands"))?;
+    let calls = parts.telephony.ok_or_else(|| missing("telephony"))?;
+    let contacts = parts.contacts.ok_or_else(|| missing("contacts"))?;
+    let files = parts.files.ok_or_else(|| missing("files"))?;
+    let power = pairly_plugins::power::PowerPlugin::new(Arc::new(phone::ForeignPower(
+        parts.power.ok_or_else(|| missing("power"))?,
+    )));
+
+    let data_dir = PathBuf::from(&options.data_dir);
+    let notifications = NotificationPlugin::new(Arc::new(ForeignNotificationHost(notifications)));
+    let device_host = Arc::new(ForeignDeviceHost(device));
+    let clipboard = ClipboardPlugin::new(device_host.clone());
+    let battery = BatteryPlugin::new(device_host.clone());
+    let findmy = FindMyPlugin::new(device_host);
+    let share = SharePlugin::new(Arc::new(ForeignShareHost(share)));
+    let bluetooth = ForeignBluetooth::new(bluetooth);
+    let media = pairly_plugins::media::MediaPlugin::new(Arc::new(media::ForeignMediaHost(media)));
+    let telephony =
+        pairly_plugins::telephony::TelephonyPlugin::new(Arc::new(phone::ForeignCalls(calls)));
+    let contacts =
+        pairly_plugins::contacts::ContactsPlugin::new(Arc::new(phone::ForeignContacts(contacts)));
+    let sms = pairly_plugins::sms::SmsPlugin::new(Arc::new(phone::ForeignSms(sms)));
+    let commands =
+        pairly_plugins::command::CommandPlugin::new(Arc::new(phone::ForeignCommands(commands)));
+    let input = pairly_plugins::input::InputPlugin::new(Arc::new(phone::NoInput));
+    let mut config = NodeConfig::new(options.name, options.kind.into());
+    config.relay = options.relay.filter(|r| !r.trim().is_empty());
+    let node = PairlyNode::builder(config)
+        .keystore(Arc::new(ForeignKeyStore(secrets)))
+        .registry(Registry::open(&data_dir.join("registry.db"))?)
+        .platform(Arc::new(FfiPlatform {
+            listener: listener.clone(),
+        }))
+        .transport(LanTransport::new(LanConfig {
+            port: options.lan_port,
+            mdns: true,
+        }))
+        // Only while a device has no LAN link: an idle relay connection costs battery.
+        .transport(RelayTransport::new(RelayConfig {
+            only_when_needed: true,
+        }))
+        .transport(bluetooth.clone())
+        .plugin(Arc::new(PingPlugin))
+        .plugin(notifications.clone())
+        .plugin(clipboard.clone())
+        .plugin(battery.clone())
+        .plugin(findmy.clone())
+        .plugin(share.clone())
+        .plugin(media.clone())
+        .plugin(telephony.clone())
+        .plugin(sms.clone())
+        .plugin(commands.clone())
+        .plugin(input.clone())
+        .plugin(contacts)
+        .plugin(pairly_plugins::files::FilesPlugin::new(Arc::new(
+            phone::ForeignFiles(files),
+        )))
+        .plugin(power.clone())
+        .start()
+        .await?;
+    let mut events = node.subscribe();
+    let forward = tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => listener.on_event(event.into()),
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
     });
-    Ok(Arc::new(task.await.map_err(failed)??))
+    Ok(Node {
+        inner: node,
+        notifications,
+        clipboard,
+        battery,
+        findmy,
+        share,
+        bluetooth,
+        media,
+        telephony,
+        sms,
+        commands,
+        input,
+        power,
+        forward: forward.abort_handle(),
+    })
 }
 
 #[uniffi::export]
@@ -763,6 +945,26 @@ impl Node {
     }
 
     /// Ask a device to start or stop ringing.
+    /// Lock a PC's screen, or power it off or restart it; resolves once it has (or said why
+    /// not).
+    pub async fn power(&self, device: String, action: PowerActionData) -> Result<(), PairlyError> {
+        use pairly_plugins::power::PowerAction;
+        let (power, id) = (self.power.clone(), parse_id(&device)?);
+        let action = match action {
+            PowerActionData::Lock => PowerAction::Lock,
+            PowerActionData::PowerOff => PowerAction::PowerOff,
+            PowerActionData::Restart => PowerAction::Restart,
+        };
+        runtime()
+            .spawn(async move { power.request(id, action).await })
+            .await
+            .map_err(failed)?
+            .map_err(|e| match e {
+                CoreError::Transport(why) => failed(why),
+                other => other.into(),
+            })
+    }
+
     pub fn ring(&self, device: String, on: bool) -> Result<(), PairlyError> {
         Ok(self.findmy.ring(parse_id(&device)?, on)?)
     }
@@ -845,6 +1047,90 @@ impl Node {
     /// Transfers that haven't finished.
     pub fn transfers(&self) -> Vec<TransferData> {
         self.share.transfers().iter().map(Into::into).collect()
+    }
+
+    /// The phone's media players changed: Rust asks [`MediaHandler::players`] and tells peers.
+    pub fn media_changed(&self) {
+        self.media.local_changed();
+    }
+
+    /// Control a paired device's player.
+    pub fn media_command(
+        &self,
+        device: String,
+        player: String,
+        action: MediaActionData,
+    ) -> Result<(), PairlyError> {
+        Ok(self
+            .media
+            .command(parse_id(&device)?, &player, action.into())?)
+    }
+
+    /// A call on the phone changed (tells every connected device).
+    pub fn call_changed(
+        &self,
+        state: CallStateData,
+        number: Option<String>,
+        contact: Option<String>,
+    ) -> Result<(), PairlyError> {
+        Ok(self
+            .telephony
+            .report(&phone::call_event(state, number, contact))?)
+    }
+
+    /// A text arrived on (or was sent from) the phone.
+    pub fn sms_new(&self, message: MessageData, name: Option<String>) {
+        self.sms.new_message(message.into(), name);
+    }
+
+    /// Tell the PCs how sending a text went (a picture message reports once the carrier
+    /// answers).
+    pub fn sms_status(&self, ok: bool, detail: String) {
+        self.sms.report(ok, &detail);
+    }
+
+    /// Run one of a PC's commands (an id from `CommandHandler::peer_commands`).
+    pub fn run_command(&self, device: String, id: String) -> Result<(), PairlyError> {
+        Ok(self.commands.run(parse_id(&device)?, &id)?)
+    }
+
+    /// Touchpad movement and scrolling.
+    pub fn input_pointer(
+        &self,
+        device: String,
+        dx: f32,
+        dy: f32,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) -> Result<(), PairlyError> {
+        Ok(self.input.pointer(
+            parse_id(&device)?,
+            phone::motion(dx, dy, scroll_x, scroll_y),
+        )?)
+    }
+
+    pub fn input_button(
+        &self,
+        device: String,
+        button: MouseButtonData,
+        action: ButtonActionData,
+    ) -> Result<(), PairlyError> {
+        Ok(self
+            .input
+            .button(parse_id(&device)?, phone::button(button, action))?)
+    }
+
+    /// Type `text`, or press one special `key`, with `modifiers` held.
+    pub fn input_key(
+        &self,
+        device: String,
+        text: Option<String>,
+        key: Option<KeyData>,
+        modifiers: ModifiersData,
+    ) -> Result<(), PairlyError> {
+        Ok(self
+            .input
+            .key(parse_id(&device)?, &phone::key(text, key, modifiers))?)
     }
 
     /// A paired device connected to the app's Bluetooth server socket.

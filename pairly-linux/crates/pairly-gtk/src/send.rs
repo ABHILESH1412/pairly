@@ -66,7 +66,7 @@ fn notify(summary: &str, body: &str) {
             &(
                 "Pairly",
                 0u32,
-                "dev.pairly.Pairly",
+                "io.github.abhilesh1412.Pairly",
                 summary,
                 body,
                 Vec::<&str>::new(),
@@ -177,7 +177,7 @@ fn picker(
 
 pub fn run(target: Option<String>, paths: Vec<String>) {
     let app = adw::Application::builder()
-        .application_id("dev.pairly.Pairly.Send")
+        .application_id("io.github.abhilesh1412.Pairly.Send")
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let paths = RefCell::new(Some(paths));

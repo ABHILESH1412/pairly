@@ -4,7 +4,7 @@ After=dbus.socket
 
 [Service]
 Type=dbus
-BusName=dev.pairly.Daemon
+BusName=io.github.abhilesh1412.Pairly.Daemon
 ExecStart=@bindir@/pairlyd
 Restart=on-failure
 RestartSec=3

@@ -1,10 +1,20 @@
+# Release output (scripts/release.sh)
+dist/
+
 # Rust
 target/
+pairly-core/fuzz/corpus/
+pairly-core/fuzz/artifacts/
+pairly-core/fuzz/coverage/
 
 # Android / Gradle
 .gradle/
 build/
 local.properties
+# Release signing: the keystore and its passwords never go in the repo.
+keystore.properties
+*.jks
+*.keystore
 .idea/
 *.iml
 .cxx/

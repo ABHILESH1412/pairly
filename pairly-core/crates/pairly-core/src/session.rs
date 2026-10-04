@@ -19,9 +19,16 @@ use tokio::task::AbortHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, trace};
 
-use crate::Result;
 use crate::channel::{Channel, ChannelReader, ChannelWriter};
 use crate::transport::TransportKind;
+use crate::{CoreError, Result};
+
+/// Unreliable packets (pointer motion, keepalives…) queued per priority while the link is slow;
+/// newer ones are dropped beyond this rather than piling up.
+const MAX_QUEUED_UNRELIABLE: usize = 512;
+/// Reliable packets waiting for their ack (kept for resending). File transfers keep about 130
+/// in flight, so this is only reached by a stuck or misbehaving peer.
+const MAX_UNACKED: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
@@ -349,11 +356,19 @@ impl Session {
         }
     }
 
-    /// Queue a packet. Returns its id, or `None` if it was unreliable and no channel is up.
-    pub fn send(&self, packet: OutboundPacket) -> Option<u64> {
+    /// Queue a packet. Returns its id, or `None` if it was unreliable and was dropped (no
+    /// channel is up, or the queue is full). A reliable packet is refused with
+    /// [`CoreError::Backlog`] when too many are already waiting for their acks.
+    pub fn send(&self, packet: OutboundPacket) -> Result<Option<u64>, CoreError> {
         let mut st = self.shared.lock();
-        if st.link.is_none() && !packet.ack {
-            return None;
+        if !packet.ack
+            && (st.link.is_none()
+                || st.queues[packet.priority as usize].len() >= MAX_QUEUED_UNRELIABLE)
+        {
+            return Ok(None);
+        }
+        if packet.ack && st.unacked.len() >= MAX_UNACKED {
+            return Err(CoreError::Backlog(self.shared.peer));
         }
         let env = st.envelope(packet.ty, packet.body, packet.ack);
         let id = env.id;
@@ -365,7 +380,7 @@ impl Session {
             drop(st);
             self.shared.wake.notify_one();
         }
-        Some(id)
+        Ok(Some(id))
     }
 
     pub fn is_connected(&self) -> bool {
@@ -679,12 +694,33 @@ mod tests {
         assert!(w.insert(1));
     }
 
+    #[test]
+    fn backlog_is_bounded() {
+        let (tx, _rx) = mpsc::channel(1);
+        let s = Session::new(
+            IdentityKeypair::generate().device_id(),
+            SessionConfig::default(),
+            tx,
+        );
+        // No channel: reliable packets wait for one, up to the cap.
+        for n in 0..MAX_UNACKED as u64 {
+            assert!(s.send(msg(n, Priority::Bulk)).unwrap().is_some());
+        }
+        assert!(matches!(
+            s.send(msg(0, Priority::Bulk)),
+            Err(CoreError::Backlog(_))
+        ));
+        // Unreliable ones are just dropped.
+        let unreliable = OutboundPacket::unreliable(&Msg { n: 1 }, Priority::Control).unwrap();
+        assert!(s.send(unreliable).unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn delivers_and_acks() {
         let mut p = Pair::new(SessionConfig::default());
         p.connect().await;
         for n in 0..10 {
-            p.a.send(msg(n, Priority::Interactive));
+            p.a.send(msg(n, Priority::Interactive)).unwrap();
         }
         for n in 0..10 {
             assert_eq!(expect_msg(&mut p.b_events).await, n);
@@ -709,7 +745,7 @@ mod tests {
         let mut p = Pair::new(config);
         p.connect().await;
         for n in 0..20 {
-            p.a.send(msg(n, Priority::Interactive));
+            p.a.send(msg(n, Priority::Interactive)).unwrap();
         }
         for n in 0..20 {
             assert_eq!(expect_msg(&mut p.b_events).await, n);
@@ -720,10 +756,11 @@ mod tests {
         p.a.detach();
         p.b.detach();
         for n in 20..25 {
-            p.a.send(msg(n, Priority::Interactive));
+            p.a.send(msg(n, Priority::Interactive)).unwrap();
         }
         assert!(
             p.a.send(OutboundPacket::unreliable(&Msg { n: 99 }, Priority::Control).unwrap())
+                .unwrap()
                 .is_none()
         );
 
@@ -745,7 +782,7 @@ mod tests {
         };
         let mut p = Pair::new(config);
         p.connect().await;
-        p.a.send(msg(1, Priority::Interactive));
+        p.a.send(msg(1, Priority::Interactive)).unwrap();
         assert_eq!(expect_msg(&mut p.b_events).await, 1);
         assert_eq!(p.a.unacked_len(), 1);
         p.b.close(Duration::from_secs(1)).await;
@@ -770,10 +807,10 @@ mod tests {
         let mut p = Pair::new(config);
         // Queue while disconnected so the writer sees everything at once.
         for n in 0..5 {
-            p.a.send(msg(n, Priority::Bulk));
+            p.a.send(msg(n, Priority::Bulk)).unwrap();
         }
-        p.a.send(msg(100, Priority::Control));
-        p.a.send(msg(50, Priority::Interactive));
+        p.a.send(msg(100, Priority::Control)).unwrap();
+        p.a.send(msg(50, Priority::Interactive)).unwrap();
         p.connect().await;
         let order: Vec<u64> = futures_collect(&mut p.b_events, 7).await;
         assert_eq!(order, vec![100, 50, 0, 1, 2, 3, 4]);
@@ -796,7 +833,7 @@ mod tests {
         };
         let mut p = Pair::new(config.clone());
         p.connect().await;
-        p.a.send(msg(1, Priority::Interactive));
+        p.a.send(msg(1, Priority::Interactive)).unwrap();
         assert_eq!(expect_msg(&mut p.b_events).await, 1);
 
         // A restarts: new session (ids start at 1 again) and a new session nonce.
@@ -808,7 +845,7 @@ mod tests {
         p.a.attach(ca, identity(2)).await;
         p.b.attach(cb, identity(777)).await;
         let _ = next(&mut p.b_events).await; // Connected
-        p.a.send(msg(2, Priority::Interactive)); // id 1 again
+        p.a.send(msg(2, Priority::Interactive)).unwrap(); // id 1 again
         assert_eq!(expect_msg(&mut p.b_events).await, 2);
     }
 

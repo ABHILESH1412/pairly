@@ -1,4 +1,4 @@
-//! Server side of `dev.pairly.Daemon1` (see the `pairly-dbus` crate for the client proxy).
+//! Server side of `io.github.abhilesh1412.Pairly.Daemon1` (see the `pairly-dbus` crate for the client proxy).
 
 use pairly_core::{DeviceId, PairlyNode, TransportKind};
 use pairly_dbus::Device;
@@ -9,6 +9,8 @@ pub struct DaemonIface {
     pub node: PairlyNode,
     pub features: crate::Features,
     pub qr_timeout: std::time::Duration,
+    pub data_dir: std::path::PathBuf,
+    pub cache_dir: std::path::PathBuf,
 }
 
 fn parse_id(id: &str) -> fdo::Result<DeviceId> {
@@ -29,7 +31,7 @@ pub fn link_name(kind: TransportKind) -> &'static str {
     }
 }
 
-#[interface(name = "dev.pairly.Daemon1")]
+#[interface(name = "io.github.abhilesh1412.Pairly.Daemon1")]
 impl DaemonIface {
     async fn get_identity(&self) -> (String, String) {
         (
@@ -157,6 +159,394 @@ impl DaemonIface {
             .collect()
     }
 
+    async fn list_conversations(&self, id: &str) -> fdo::Result<Vec<pairly_dbus::Conversation>> {
+        let list = self
+            .features
+            .sms
+            .conversations(parse_id(id)?)
+            .await
+            .map_err(failed)?;
+        Ok(list
+            .into_iter()
+            .map(|c| pairly_dbus::Conversation {
+                thread_id: c.thread_id,
+                addresses: c.addresses,
+                names: c.names,
+                snippet: c.snippet,
+                date_ms: c.date_ms,
+                read: c.read,
+            })
+            .collect())
+    }
+
+    async fn list_messages(
+        &self,
+        id: &str,
+        thread_id: i64,
+        before_ms: i64,
+    ) -> fdo::Result<Vec<pairly_dbus::TextMessage>> {
+        let before = (before_ms > 0).then_some(before_ms);
+        let list = self
+            .features
+            .sms
+            .messages(parse_id(id)?, thread_id, before, 50)
+            .await
+            .map_err(failed)?;
+        Ok(list
+            .into_iter()
+            .map(|m| pairly_dbus::TextMessage {
+                id: m.id,
+                thread_id: m.thread_id,
+                address: m.address,
+                body: m.body,
+                date_ms: m.date_ms,
+                outgoing: m.outgoing,
+                participants: m.participants,
+                attachments: m
+                    .attachments
+                    .into_iter()
+                    .map(|a| pairly_dbus::MessageAttachment {
+                        part_id: a.part_id,
+                        mime: a.mime,
+                        name: a.name,
+                        size: a.size,
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    async fn send_sms(&self, id: &str, addresses: Vec<String>, text: &str) -> fdo::Result<()> {
+        self.features
+            .sms
+            .send(parse_id(id)?, addresses, text, Vec::new())
+            .map_err(failed)
+    }
+
+    async fn send_mms(
+        &self,
+        id: &str,
+        addresses: Vec<String>,
+        text: &str,
+        files: Vec<String>,
+    ) -> fdo::Result<()> {
+        let mut attachments = Vec::new();
+        for path in &files {
+            let path = std::path::Path::new(path);
+            let meta = std::fs::metadata(path).map_err(failed)?;
+            if meta.len() > u64::from(pairly_plugins::sms::ATTACHMENT_CHUNK) {
+                return Err(fdo::Error::Failed(format!(
+                    "{} is too big for a picture message (at most {} KB)",
+                    path.display(),
+                    pairly_plugins::sms::ATTACHMENT_CHUNK / 1024
+                )));
+            }
+            attachments.push(pairly_plugins::sms::OutgoingAttachment {
+                mime: crate::sms::mime_for(path).to_owned(),
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                data: std::fs::read(path).map_err(failed)?,
+            });
+        }
+        self.features
+            .sms
+            .send(parse_id(id)?, addresses, text, attachments)
+            .map_err(failed)
+    }
+
+    async fn sms_attachment(&self, id: &str, part_id: i64, name: &str) -> fdo::Result<String> {
+        let peer = parse_id(id)?;
+        let dir = self.cache_dir.join("mms");
+        let file = dir.join(format!(
+            "{peer}-{part_id}-{}",
+            pairly_plugins::share::safe_file_name(name)
+        ));
+        if !file.exists() {
+            let data = self
+                .features
+                .sms
+                .attachment(peer, part_id, 20 * 1024 * 1024)
+                .await
+                .map_err(failed)?;
+            std::fs::create_dir_all(&dir).map_err(failed)?;
+            std::fs::write(&file, data).map_err(failed)?;
+        }
+        Ok(file.display().to_string())
+    }
+
+    async fn files_list(&self, id: &str, path: &str) -> fdo::Result<Vec<pairly_dbus::FileEntry>> {
+        let list = self
+            .features
+            .files
+            .list(parse_id(id)?, path)
+            .await
+            .map_err(failed)?;
+        Ok(list
+            .into_iter()
+            .map(|e| pairly_dbus::FileEntry {
+                name: e.name,
+                dir: e.dir,
+                size: e.size,
+                modified_ms: e.modified_ms,
+            })
+            .collect())
+    }
+
+    async fn files_download(
+        &self,
+        id: &str,
+        path: &str,
+        size: u64,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        let peer = parse_id(id)?;
+        let name = path.rsplit('/').next().unwrap_or("file");
+        let name = pairly_plugins::share::safe_file_name(name);
+        let dir = self.features.share.download_dir().to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(failed)?;
+        let target = crate::share::unique_path(&dir, &name);
+        let part = target.with_file_name(format!(
+            "{}.part",
+            target
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default()
+        ));
+        let result = async {
+            use std::io::Write;
+            let mut out = std::fs::File::create(&part).map_err(failed)?;
+            let mut offset = 0u64;
+            loop {
+                let chunk = self
+                    .features
+                    .files
+                    .read(peer, path, offset, pairly_plugins::files::CHUNK)
+                    .await
+                    .map_err(failed)?;
+                if chunk.is_empty() {
+                    break;
+                }
+                out.write_all(&chunk).map_err(failed)?;
+                offset += chunk.len() as u64;
+                let _ = Self::files_progress(&emitter, id, path, offset, size.max(offset)).await;
+            }
+            out.sync_all().map_err(failed)?;
+            std::fs::rename(&part, &target).map_err(failed)
+        }
+        .await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        result?;
+        tracing::info!(device = id, path, "downloaded a file from the phone");
+        Ok(target.display().to_string())
+    }
+
+    async fn files_upload(
+        &self,
+        id: &str,
+        local_path: &str,
+        remote_dir: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        use pairly_plugins::files::{CHUNK, FileOp};
+        use std::os::unix::fs::FileExt;
+        let peer = parse_id(id)?;
+        let local = std::path::Path::new(local_path);
+        let file = std::fs::File::open(local).map_err(failed)?;
+        let size = file.metadata().map_err(failed)?.len();
+        let name = local
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| fdo::Error::InvalidArgs("not a file".into()))?;
+        let remote = if remote_dir.trim_matches('/').is_empty() {
+            name
+        } else {
+            format!("{}/{name}", remote_dir.trim_matches('/'))
+        };
+        let mut offset = 0u64;
+        loop {
+            let mut buf = vec![0u8; CHUNK as usize];
+            let n = file.read_at(&mut buf, offset).map_err(failed)?;
+            buf.truncate(n);
+            if n == 0 && offset > 0 {
+                break;
+            }
+            let op = FileOp::Write {
+                path: remote.clone(),
+                offset,
+                data: buf,
+                create: offset == 0,
+            };
+            self.features.files.ask(peer, op).await.map_err(failed)?;
+            offset += n as u64;
+            let _ = Self::files_progress(&emitter, id, &remote, offset, size).await;
+            if n == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn files_delete(&self, id: &str, path: &str) -> fdo::Result<()> {
+        let op = pairly_plugins::files::FileOp::Delete {
+            path: path.to_owned(),
+        };
+        self.features
+            .files
+            .ask(parse_id(id)?, op)
+            .await
+            .map(drop)
+            .map_err(failed)
+    }
+
+    async fn files_mkdir(&self, id: &str, path: &str) -> fdo::Result<()> {
+        let op = pairly_plugins::files::FileOp::Mkdir {
+            path: path.to_owned(),
+        };
+        self.features
+            .files
+            .ask(parse_id(id)?, op)
+            .await
+            .map(drop)
+            .map_err(failed)
+    }
+
+    async fn files_rename(&self, id: &str, from: &str, to: &str) -> fdo::Result<()> {
+        let op = pairly_plugins::files::FileOp::Rename {
+            from: from.to_owned(),
+            to: to.to_owned(),
+        };
+        self.features
+            .files
+            .ask(parse_id(id)?, op)
+            .await
+            .map(drop)
+            .map_err(failed)
+    }
+
+    async fn phone_power(&self, id: &str, action: &str) -> fdo::Result<()> {
+        use pairly_plugins::power::PowerAction;
+        let action = match action {
+            "lock" => PowerAction::Lock,
+            "poweroff" => PowerAction::PowerOff,
+            "restart" => PowerAction::Restart,
+            other => return Err(fdo::Error::InvalidArgs(format!("unknown action {other}"))),
+        };
+        let peer = parse_id(id)?;
+        tracing::info!(device = %peer, ?action, "power action");
+        self.features
+            .power
+            .request(peer, action)
+            .await
+            .map_err(|e| match e {
+                // The phone's own explanation, as it gave it.
+                pairly_core::CoreError::Transport(why) => fdo::Error::Failed(why),
+                other => failed(other),
+            })
+    }
+
+    async fn list_contacts(&self, id: &str) -> fdo::Result<Vec<pairly_dbus::Contact>> {
+        let peer = parse_id(id)?;
+        let list = self.features.contacts.fetch(peer).await.map_err(failed)?;
+        crate::contacts::save_vcards(&self.data_dir, peer, &list);
+        Ok(list
+            .into_iter()
+            .map(|c| pairly_dbus::Contact {
+                name: c.name,
+                numbers: c.numbers,
+            })
+            .collect())
+    }
+
+    async fn dial(&self, id: &str, number: &str) -> fdo::Result<()> {
+        self.features
+            .telephony
+            .dial(parse_id(id)?, number)
+            .map_err(failed)
+    }
+
+    async fn call_action(&self, id: &str, action: &str) -> fdo::Result<()> {
+        use pairly_plugins::telephony::CallAction;
+        let action = match action {
+            "answer" => CallAction::Answer,
+            "speaker" => CallAction::AnswerOnSpeaker,
+            "reject" => CallAction::Reject,
+            "hangup" => CallAction::HangUp,
+            other => {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "unknown call action {other:?}"
+                )));
+            }
+        };
+        self.features
+            .telephony
+            .control(parse_id(id)?, action)
+            .map_err(failed)
+    }
+
+    async fn list_commands(&self) -> Vec<pairly_dbus::Command> {
+        self.features
+            .commands
+            .list()
+            .into_iter()
+            .map(|c| pairly_dbus::Command {
+                id: c.id,
+                name: c.name,
+                command: c.command,
+            })
+            .collect()
+    }
+
+    async fn add_command(&self, name: &str, command: &str) -> fdo::Result<String> {
+        self.features.commands.add(name, command).map_err(failed)
+    }
+
+    async fn remove_command(&self, id: &str) -> fdo::Result<()> {
+        self.features.commands.remove(id).map(drop).map_err(failed)
+    }
+
+    async fn list_players(&self, id: &str) -> fdo::Result<Vec<pairly_dbus::Player>> {
+        let peer = parse_id(id)?;
+        let players = self.features.media.peer_players(peer);
+        Ok(self.features.media_host.to_dbus(peer, &players))
+    }
+
+    async fn media_control(
+        &self,
+        id: &str,
+        player: &str,
+        action: &str,
+        value: i64,
+    ) -> fdo::Result<()> {
+        use pairly_plugins::media::MediaAction;
+        let clamp = |v: i64| u64::try_from(v.max(0)).unwrap_or(0);
+        let action = match action {
+            "play" => MediaAction::Play,
+            "pause" => MediaAction::Pause,
+            "play_pause" => MediaAction::PlayPause,
+            "stop" => MediaAction::Stop,
+            "next" => MediaAction::Next,
+            "previous" => MediaAction::Previous,
+            "seek" => MediaAction::Seek(value),
+            "set_position" => MediaAction::SetPosition(clamp(value)),
+            "set_volume" => {
+                MediaAction::SetVolume(u8::try_from(clamp(value).min(100)).unwrap_or(100))
+            }
+            other => {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "unknown media action {other:?}"
+                )));
+            }
+        };
+        self.features
+            .media
+            .command(parse_id(id)?, player, action)
+            .map_err(failed)
+    }
+
     async fn ping(&self, id: &str, message: &str) -> fdo::Result<()> {
         let message = (!message.is_empty()).then(|| message.to_owned());
         let packet = pairly_plugins::ping::packet(message).map_err(failed)?;
@@ -183,6 +573,25 @@ impl DaemonIface {
         success: bool,
         message: &str,
     ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn files_progress(
+        emitter: &SignalEmitter<'_>,
+        id: &str,
+        path: &str,
+        done: u64,
+        total: u64,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn sms_received(
+        emitter: &SignalEmitter<'_>,
+        id: &str,
+        thread_id: i64,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn players_changed(emitter: &SignalEmitter<'_>, id: &str) -> zbus::Result<()>;
 
     #[zbus(signal)]
     pub async fn transfer_changed(

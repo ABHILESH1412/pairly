@@ -37,5 +37,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Tethering and some network switches don't reach the service's callback.
         Pairly.networkChanged()
+        // Notification access may just have been granted: start reading media sessions.
+        dev.pairly.android.media.PhoneMedia.start(this)
     }
 }

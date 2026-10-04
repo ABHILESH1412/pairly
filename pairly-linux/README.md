@@ -1,7 +1,7 @@
 # pairly-linux
 
 Linux app: `pairlyd` daemon, `pairly-gtk` (GTK4 + libadwaita UI, Phase 4), the `pairly` CLI,
-the D-Bus interface crate (`dev.pairly.Daemon1`) and the Bluetooth transport (Phase 9).
+the D-Bus interface crate (`io.github.abhilesh1412.Pairly.Daemon1`) and the Bluetooth transport (Phase 9).
 Depends on `../pairly-core` by path. See `../plan.md` section 9.
 
 ## Install (current user, no root)
@@ -56,7 +56,7 @@ Data lives in `$XDG_DATA_HOME/pairly` (`identity.key`, `registry.db`). Settings 
 ```toml
 name = "My Laptop"
 device_type = "laptop"
-bus_name = "dev.pairly.Daemon"
+bus_name = "io.github.abhilesh1412.Pairly.Daemon"
 tray = true
 [lan]
 port = 47100
@@ -65,6 +65,7 @@ enabled = true              # false: no LAN at all, only the relay
 
 [relay]
 address = "pairly-relay://TOKEN@host:47200/PIN"   # see pairly-core/crates/pairly-relay/README.md
+padding = true              # hide exact message sizes from the relay (256-byte steps)
 
 [clipboard]
 auto = true                 # send every copy to connected devices (false: only on request)
@@ -79,12 +80,28 @@ send = true                 # forward this PC's notifications to your phone
 show = true                 # show your phone's notifications here
 ignore_apps = ["Spotify"]   # app names never forwarded
 reply = "auto"              # "inline", "dialog" or "auto"
+dismiss_on_phone = true     # closing a phone's notification here clears it on the phone
+
+[power]
+from_phone = true           # paired phones may lock, power off or restart this PC
 ```
 
 Replies to phone notifications use the notification server's inline reply field when it has
 one. swaync advertises inline replies even with `"notification-inline-replies": false` in its
 config, so pairlyd reads that setting and uses a small reply window instead. Change it to
 `true` (then `swaync-client -R` and `systemctl --user restart pairlyd`) for the inline field.
+
+### Phone features
+
+- **Media:** your phone's player shows up as an MPRIS player (`playerctl`, Waybar, media keys),
+  and this PC's players appear on the phone's lock screen.
+- **Calls:** an incoming call shows here and pauses your music (`[telephony] pause_media`).
+- **Messages:** on the phone's page, **Messages** reads and sends SMS through the phone.
+- **Commands:** the terminal icon (or the **Commands** tile) sets which commands the phone may
+  run here. The phone can only run commands from that list, after confirming, and each run shows
+  a notification.
+- **Touchpad, keyboard, presenter:** driven from the phone. They need a compositor with the
+  wlroots virtual pointer and keyboard protocols (Hyprland, Sway, river).
 
 ### Bluetooth
 

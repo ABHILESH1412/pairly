@@ -8,6 +8,10 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod commands;
+mod contacts;
+mod files;
+mod messages;
 mod qr;
 mod reply;
 mod send;
@@ -18,8 +22,8 @@ use relm4::RelmApp;
 use relm4::gtk::gio::prelude::FileExt;
 use zbus::zvariant::Value;
 
-const APP_ID: &str = "dev.pairly.Pairly";
-const APP_PATH: &str = "/dev/pairly/Pairly";
+const APP_ID: &str = "io.github.abhilesh1412.Pairly";
+const APP_PATH: &str = "/io/github/abhilesh1412/Pairly";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

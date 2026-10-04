@@ -22,6 +22,10 @@ impl Peers {
         lock(&self.0).remove(&peer);
     }
 
+    pub fn ids(&self) -> Vec<DeviceId> {
+        lock(&self.0).keys().copied().collect()
+    }
+
     pub fn name(&self, peer: DeviceId) -> Option<String> {
         lock(&self.0).get(&peer).map(|c| c.peer_name().to_owned())
     }

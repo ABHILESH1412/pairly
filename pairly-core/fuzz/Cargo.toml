@@ -1,0 +1,59 @@
+# Fuzz targets for everything that parses data from the network (Phase 11).
+# Run with nightly: `cargo +nightly fuzz run <target>` from pairly-core/ (see README.md).
+[package]
+name = "pairly-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: fuzzing needs nightly and sanitizer flags the main workspace doesn't.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ciborium = "0.2"
+tokio = { version = "1", features = ["rt", "io-util"] }
+pairly-proto = { path = "../crates/pairly-proto" }
+pairly-crypto = { path = "../crates/pairly-crypto" }
+pairly-core = { path = "../crates/pairly-core" }
+pairly-plugins = { path = "../crates/pairly-plugins" }
+pairly-transport-relay = { path = "../crates/pairly-transport-relay" }
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake"
+path = "fuzz_targets/handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relay_join"
+path = "fuzz_targets/relay_join.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "files_path"
+path = "fuzz_targets/files_path.rs"
+test = false
+doc = false
+bench = false

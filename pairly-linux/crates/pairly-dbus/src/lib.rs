@@ -1,4 +1,4 @@
-//! The `dev.pairly.Daemon1` D-Bus interface: shared types and the client proxy used by
+//! The `io.github.abhilesh1412.Pairly.Daemon1` D-Bus interface: shared types and the client proxy used by
 //! `pairly-gtk` and the `pairly` CLI. `pairlyd` implements the server side.
 //!
 //! D-Bus has no optional type, so "absent" is an empty string or `0`.
@@ -9,10 +9,10 @@ use zbus::proxy;
 use zbus::zvariant::Type;
 
 /// Default well-known bus name owned by `pairlyd`. Override it to run a second instance.
-pub const BUS_NAME: &str = "dev.pairly.Daemon";
+pub const BUS_NAME: &str = "io.github.abhilesh1412.Pairly.Daemon";
 /// Object path of the daemon interface.
-pub const OBJECT_PATH: &str = "/dev/pairly/Daemon";
-pub const INTERFACE: &str = "dev.pairly.Daemon1";
+pub const OBJECT_PATH: &str = "/io/github/abhilesh1412/Pairly/Daemon";
+pub const INTERFACE: &str = "io.github.abhilesh1412.Pairly.Daemon1";
 
 /// A paired or discovered device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -72,10 +72,92 @@ impl Transfer {
     }
 }
 
+/// A media player on a paired device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct Player {
+    pub id: String,
+    pub name: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub playing: bool,
+    /// Milliseconds, or 0 if unknown.
+    pub length_ms: u64,
+    /// Milliseconds when the state was reported, or 0.
+    pub position_ms: u64,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+    pub can_seek: bool,
+    /// 0–100, or -1 if the player has no volume.
+    pub volume: i32,
+    /// A local `file://` (or `https://`) URL of the artwork, or empty.
+    pub art_url: String,
+}
+
+/// A text conversation on a phone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct Conversation {
+    pub thread_id: i64,
+    pub addresses: Vec<String>,
+    /// Contact names, parallel to `addresses` (empty if unknown).
+    pub names: Vec<String>,
+    pub snippet: String,
+    pub date_ms: i64,
+    pub read: bool,
+}
+
+/// A picture, video or other file in a picture message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct MessageAttachment {
+    pub part_id: i64,
+    pub mime: String,
+    pub name: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct TextMessage {
+    pub id: i64,
+    pub thread_id: i64,
+    pub address: String,
+    pub body: String,
+    pub date_ms: i64,
+    pub outgoing: bool,
+    /// Everyone in a group message (empty for one-to-one).
+    pub participants: Vec<String>,
+    pub attachments: Vec<MessageAttachment>,
+}
+
+/// A file or folder on a phone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct FileEntry {
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+    pub modified_ms: i64,
+}
+
+/// A contact on a phone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct Contact {
+    pub name: String,
+    pub numbers: Vec<String>,
+}
+
+/// A command paired devices may run on this PC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct Command {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+}
+
 #[proxy(
-    interface = "dev.pairly.Daemon1",
-    default_service = "dev.pairly.Daemon",
-    default_path = "/dev/pairly/Daemon"
+    interface = "io.github.abhilesh1412.Pairly.Daemon1",
+    default_service = "io.github.abhilesh1412.Pairly.Daemon",
+    default_path = "/io/github/abhilesh1412/Pairly/Daemon"
 )]
 pub trait Daemon {
     /// This device's `(id, name)`.
@@ -113,6 +195,55 @@ pub trait Daemon {
     fn cancel_transfer(&self, transfer: u64) -> zbus::Result<()>;
     /// Transfers that haven't finished.
     fn list_transfers(&self) -> zbus::Result<Vec<Transfer>>;
+    /// The media players on a device.
+    fn list_players(&self, id: &str) -> zbus::Result<Vec<Player>>;
+    /// A phone's text conversations, newest first.
+    fn list_conversations(&self, id: &str) -> zbus::Result<Vec<Conversation>>;
+    /// Messages in a conversation, oldest first; `before_ms` 0 for the newest page.
+    fn list_messages(
+        &self,
+        id: &str,
+        thread_id: i64,
+        before_ms: i64,
+    ) -> zbus::Result<Vec<TextMessage>>;
+    /// Send a text through the phone (an MMS to several addresses).
+    fn send_sms(&self, id: &str, addresses: &[&str], text: &str) -> zbus::Result<()>;
+    /// Send a picture message: text plus local files.
+    fn send_mms(
+        &self,
+        id: &str,
+        addresses: &[&str],
+        text: &str,
+        files: &[&str],
+    ) -> zbus::Result<()>;
+    /// Fetch a picture message's attachment into a local cache file; returns its path.
+    fn sms_attachment(&self, id: &str, part_id: i64, name: &str) -> zbus::Result<String>;
+    /// A folder on a phone (`path` relative to its storage, `""` for the top).
+    fn files_list(&self, id: &str, path: &str) -> zbus::Result<Vec<FileEntry>>;
+    /// Copy a phone's file into the download folder; returns the local path. Progress comes
+    /// as `FilesProgress`.
+    fn files_download(&self, id: &str, path: &str, size: u64) -> zbus::Result<String>;
+    /// Copy a local file into a phone folder.
+    fn files_upload(&self, id: &str, local_path: &str, remote_dir: &str) -> zbus::Result<()>;
+    fn files_delete(&self, id: &str, path: &str) -> zbus::Result<()>;
+    fn files_mkdir(&self, id: &str, path: &str) -> zbus::Result<()>;
+    fn files_rename(&self, id: &str, from: &str, to: &str) -> zbus::Result<()>;
+    /// Lock the phone's screen, or power it off or restart it: `lock`, `poweroff`, `restart`.
+    fn phone_power(&self, id: &str, action: &str) -> zbus::Result<()>;
+    /// A phone's contacts, sorted by name (also saved as a vCard file).
+    fn list_contacts(&self, id: &str) -> zbus::Result<Vec<Contact>>;
+    /// Have the phone call `number`.
+    fn dial(&self, id: &str, number: &str) -> zbus::Result<()>;
+    /// Act on the phone's current call: `answer`, `speaker`, `reject` or `hangup`.
+    fn call_action(&self, id: &str, action: &str) -> zbus::Result<()>;
+    /// Commands paired devices may run on this PC.
+    fn list_commands(&self) -> zbus::Result<Vec<Command>>;
+    /// Returns the new command's id.
+    fn add_command(&self, name: &str, command: &str) -> zbus::Result<String>;
+    fn remove_command(&self, id: &str) -> zbus::Result<()>;
+    /// Control a device's player. `action`: `play`, `pause`, `play_pause`, `stop`, `next`,
+    /// `previous`, `seek` (`value` = ms, relative), `set_position` (ms), `set_volume` (0–100).
+    fn media_control(&self, id: &str, player: &str, action: &str, value: i64) -> zbus::Result<()>;
 
     /// A device appeared, disappeared, connected, disconnected, paired or unpaired.
     #[zbus(signal)]
@@ -130,6 +261,15 @@ pub trait Daemon {
     fn pairing_finished(&self, id: &str, success: bool, message: &str) -> zbus::Result<()>;
     #[zbus(signal)]
     fn ping_received(&self, id: &str, name: &str, message: &str) -> zbus::Result<()>;
+    /// A download or upload moved on.
+    #[zbus(signal)]
+    fn files_progress(&self, id: &str, path: &str, done: u64, total: u64) -> zbus::Result<()>;
+    /// A text arrived on (or was sent from) a phone.
+    #[zbus(signal)]
+    fn sms_received(&self, id: &str, thread_id: i64) -> zbus::Result<()>;
+    /// A device's media players changed.
+    #[zbus(signal)]
+    fn players_changed(&self, id: &str) -> zbus::Result<()>;
     /// A transfer started, progressed (about 4 times a second) or finished.
     #[zbus(signal)]
     fn transfer_changed(&self, transfer: Transfer) -> zbus::Result<()>;

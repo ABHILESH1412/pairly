@@ -14,15 +14,34 @@ import dev.pairly.core.ffi.DeviceKind
 import dev.pairly.core.ffi.Event
 import dev.pairly.core.ffi.EventListener
 import dev.pairly.core.ffi.Node
+import dev.pairly.core.ffi.MediaActionData
 import dev.pairly.core.ffi.NodeOptions
+import dev.pairly.core.ffi.NodeSetup
+import dev.pairly.core.ffi.PowerActionData
+import dev.pairly.android.device.PhonePower
 import dev.pairly.core.ffi.NotificationData
 import dev.pairly.core.ffi.PairlyException
 import dev.pairly.core.ffi.TransferData
 import dev.pairly.core.ffi.TransferStatus
-import dev.pairly.core.ffi.startNode
 import dev.pairly.android.bluetooth.AndroidBluetooth
 import dev.pairly.android.bluetooth.PairlyBluetooth
 import dev.pairly.android.device.DeviceFeatures
+import dev.pairly.android.media.MediaFeatures
+import dev.pairly.android.phone.CallControl
+import dev.pairly.android.phone.Calls
+import dev.pairly.android.phone.PhoneContacts
+import dev.pairly.android.phone.SharedFiles
+import dev.pairly.android.phone.PcCommands
+import dev.pairly.android.phone.Sms
+import dev.pairly.core.ffi.ButtonActionData
+import dev.pairly.core.ffi.CallStateData
+import dev.pairly.core.ffi.CommandData
+import dev.pairly.core.ffi.KeyData
+import dev.pairly.core.ffi.MessageData
+import dev.pairly.core.ffi.ModifiersData
+import dev.pairly.core.ffi.MouseButtonData
+import dev.pairly.android.media.PcPlayers
+import dev.pairly.android.media.PhoneMedia
 import dev.pairly.android.notifications.MirroredNotifications
 import dev.pairly.android.notifications.PhoneNotifications
 import dev.pairly.android.share.Downloads
@@ -128,15 +147,19 @@ object Pairly {
                 relay = null,
             )
             val started = withContext(Dispatchers.IO) {
-                startNode(
-                    options,
-                    KeystoreSecretStore(appContext),
-                    listener,
-                    MirroredNotifications(appContext),
-                    DeviceFeatures(appContext),
-                    ShareFeatures(),
-                    AndroidBluetooth(appContext),
-                )
+                val setup = NodeSetup(options, KeystoreSecretStore(appContext), listener)
+                setup.notifications(MirroredNotifications(appContext))
+                setup.device(DeviceFeatures(appContext))
+                setup.share(ShareFeatures())
+                setup.bluetooth(AndroidBluetooth(appContext))
+                setup.media(MediaFeatures(appContext))
+                setup.sms(Sms(appContext))
+                setup.commands(PcCommands(appContext))
+                setup.telephony(CallControl(appContext))
+                setup.contacts(PhoneContacts(appContext))
+                setup.files(SharedFiles(appContext))
+                setup.power(PhonePower())
+                setup.start().also { setup.close() }
             }
             node = started
             PhoneNotifications.sink = object : PhoneNotifications.Sink {
@@ -146,6 +169,10 @@ object Pairly {
             PhoneNotifications.resend(appContext)
             DeviceFeatures.current(appContext)?.let { started.batteryChanged(it) }
             bluetoothChanged()
+            withContext(Dispatchers.Main) {
+                PhoneMedia.start(appContext)
+                phonePermissionsChanged()
+            }
             _state.update { it.copy(self = SelfInfo(started.name(), started.deviceId()), starting = false) }
             refresh()
         } catch (e: Exception) {
@@ -161,6 +188,12 @@ object Pairly {
                 val stopping = node ?: return@withLock
                 node = null
                 PairlyBluetooth.stopServer()
+                PhoneMedia.stop()
+                withContext(Dispatchers.Main) {
+                    Calls.stop()
+                    Sms.stop(appContext)
+                }
+                PcPlayers.clear(appContext)
                 PhoneNotifications.sink = null
                 stopping.shutdown()
                 stopping.close()
@@ -184,6 +217,53 @@ object Pairly {
                 n.networkChanged()
             }
         }
+    }
+
+    /** Call or SMS permissions were granted: start reporting calls and texts. Main thread. */
+    fun phonePermissionsChanged() {
+        if (node == null) return
+        Calls.start(appContext)
+        Sms.watch(appContext)
+    }
+
+    fun callChanged(state: CallStateData, number: String?, contact: String?) {
+        runCatching { node?.callChanged(state, number, contact) }
+    }
+
+    fun smsNew(message: MessageData, name: String?) {
+        node?.smsNew(message, name)
+    }
+
+    /** Tell the PCs how sending a text went. */
+    fun smsStatus(ok: Boolean, detail: String) {
+        node?.smsStatus(ok, detail)
+    }
+
+    fun runCommand(device: Device, command: CommandData) {
+        runCatching { node?.runCommand(device.id, command.id) }
+            .onSuccess { say(appContext.getString(R.string.command_started, command.name)) }
+            .onFailure { say(it.describe()) }
+    }
+
+    fun inputPointer(device: String, dx: Float, dy: Float, scrollX: Float, scrollY: Float) {
+        runCatching { node?.inputPointer(device, dx, dy, scrollX, scrollY) }
+    }
+
+    fun inputButton(device: String, button: MouseButtonData, action: ButtonActionData) {
+        runCatching { node?.inputButton(device, button, action) }
+    }
+
+    fun inputKey(device: String, text: String?, key: KeyData?, modifiers: ModifiersData) {
+        runCatching { node?.inputKey(device, text, key, modifiers) }.onFailure { say(it.describe()) }
+    }
+
+    /** The phone's players changed: the core asks [MediaFeatures] and tells paired devices. */
+    fun mediaChanged() {
+        node?.mediaChanged()
+    }
+
+    fun mediaCommand(device: String, player: String, action: MediaActionData) {
+        runCatching { node?.mediaCommand(device, player, action) }.onFailure { say(it.describe()) }
     }
 
     /** Bluetooth was switched on or off, or its permission granted: (re)start listening. */
@@ -263,6 +343,29 @@ object Pairly {
             return
         }
         connected.forEach { sendClipboard(it, text) }
+    }
+
+    /** Copied on the phone (noticed by the accessibility service): to every connected device. */
+    fun sendClipboardQuietly(text: String) {
+        _state.value.devices.filter { it.paired && it.link != null }.forEach { device ->
+            runCatching { node?.sendClipboard(device.id, text) }.onFailure { Log.w(TAG, "clipboard to ${device.name} failed", it) }
+        }
+    }
+
+    /** Lock, power off or restart a PC; says how it went. */
+    fun power(device: Device, action: PowerActionData) {
+        scope.launch {
+            runCatching { node?.power(device.id, action) }
+                .onSuccess {
+                    val done = when (action) {
+                        PowerActionData.LOCK -> R.string.power_locked
+                        PowerActionData.POWER_OFF -> R.string.power_powering_off
+                        PowerActionData.RESTART -> R.string.power_restarting
+                    }
+                    say(appContext.getString(done, device.name))
+                }
+                .onFailure { say(it.describe()) }
+        }
     }
 
     fun ring(device: Device, on: Boolean) {

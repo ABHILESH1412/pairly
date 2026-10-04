@@ -225,6 +225,8 @@ async fn rejected_pairing_stores_nothing() {
     b.event(|e| matches!(e, NodeEvent::PairingFailed { id, .. } if *id == a_id).then_some(()))
         .await;
     assert!(!a.paired_with(b_id) && !b.paired_with(a_id));
+    // A declined request starts a cooldown: an immediate retry is refused without a prompt.
+    assert!(a.node.request_pair(b_id).await.is_err());
 }
 
 #[tokio::test]

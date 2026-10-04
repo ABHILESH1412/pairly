@@ -16,7 +16,7 @@ const SECRET_HINT: &str = "x-kde-passwordManagerHint";
 
 /// `WAYLAND_DISPLAY`, or the first compositor socket in the runtime dir. A user service can
 /// start before the compositor exports its environment to systemd.
-fn wayland_display() -> Option<String> {
+pub fn wayland_display() -> Option<String> {
     if let Some(d) = std::env::var_os("WAYLAND_DISPLAY") {
         return Some(d.to_string_lossy().into_owned());
     }

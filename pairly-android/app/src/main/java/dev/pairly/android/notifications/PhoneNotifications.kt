@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.graphics.createBitmap
 import dev.pairly.core.ffi.IconData
@@ -54,6 +55,8 @@ class PairlyNotificationListener : NotificationListenerService() {
 object PhoneNotifications {
     private const val TAG = "PairlyNotifications"
     private const val ICON_SIZE = 64
+    /** Messages of one conversation sent at most (the newest). */
+    private const val MAX_MESSAGES = 15
 
     /** Fed to the node; set while it runs. */
     @Volatile
@@ -114,6 +117,36 @@ object PhoneNotifications {
         return old.sbn
     }
 
+    /**
+     * The notification's text. Chat apps keep one notification per conversation and add each
+     * new message to it (MessagingStyle): send all of them, with who wrote each in a group. A
+     * plain notification's EXTRA_TEXT would be only the latest message.
+     */
+    private fun bodyOf(n: Notification): String {
+        val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(n)
+        if (style != null && style.messages.isNotEmpty()) {
+            val me = style.user.name?.toString()
+            return style.messages.takeLast(MAX_MESSAGES).joinToString("\n") { m ->
+                val text = m.text?.toString()?.takeIf { it.isNotBlank() }
+                    ?: if (m.dataMimeType?.startsWith("image/") == true) "📷" else ""
+                val who = m.person?.name?.toString()
+                // No sender means the phone's owner (e.g. a reply sent from the notification).
+                val fromMe = m.person == null || (me != null && who == me)
+                when {
+                    fromMe -> "You: $text"
+                    style.isGroupConversation -> "$who: $text"
+                    else -> text
+                }
+            }
+        }
+        val extras = n.extras
+        extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.takeIf { it.isNotEmpty() }?.let { lines ->
+            return lines.takeLast(MAX_MESSAGES).joinToString("\n")
+        }
+        return (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))
+            ?.toString().orEmpty()
+    }
+
     fun prefs(context: Context): NotificationPrefs =
         prefs ?: synchronized(this) { prefs ?: NotificationPrefs(context.applicationContext).also { prefs = it } }
 
@@ -139,8 +172,7 @@ object PhoneNotifications {
 
         val extras = n.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))
-            ?.toString().orEmpty()
+        val text = bodyOf(n)
         if (title.isBlank() && text.isBlank()) return
 
         val actions = n.actions.orEmpty()

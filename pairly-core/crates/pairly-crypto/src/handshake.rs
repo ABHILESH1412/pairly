@@ -177,7 +177,7 @@ impl Handshake {
             hash,
         };
         let cipher = SessionCipher {
-            state: self.state.into_stateless_transport_mode()?,
+            state: std::sync::Mutex::new(self.state.into_stateless_transport_mode()?),
         };
         Ok((cipher, info))
     }
@@ -194,27 +194,45 @@ pub struct HandshakeInfo {
 }
 
 /// Transport-phase cipher. Nonces are explicit, so a channel's reader and writer can share one
-/// instance (`&self`) while each keeps its own counter.
+/// instance (`&self`) while each keeps its own counter. Each direction's key can be replaced
+/// ([`Self::rekey_outgoing`], [`Self::rekey_incoming`]) without touching the other.
 pub struct SessionCipher {
-    state: StatelessTransportState,
+    state: std::sync::Mutex<StatelessTransportState>,
 }
 
 impl SessionCipher {
     /// Largest plaintext that fits in one Noise message.
     pub const MAX_PLAINTEXT: usize = MAX_MESSAGE - TAG_LEN;
 
+    fn state(&self) -> std::sync::MutexGuard<'_, StatelessTransportState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn encrypt(&self, nonce: u64, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let mut out = vec![0u8; plaintext.len() + TAG_LEN];
-        let n = self.state.write_message(nonce, plaintext, &mut out)?;
+        let n = self.state().write_message(nonce, plaintext, &mut out)?;
         out.truncate(n);
         Ok(out)
     }
 
     pub fn decrypt(&self, nonce: u64, ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let mut out = vec![0u8; ciphertext.len()];
-        let n = self.state.read_message(nonce, ciphertext, &mut out)?;
+        let n = self.state().read_message(nonce, ciphertext, &mut out)?;
         out.truncate(n);
         Ok(out)
+    }
+
+    /// Replace our sending key with one derived from it (Noise `REKEY`); the old one can't be
+    /// recovered from the new. The peer must switch its receiving key at the same message.
+    pub fn rekey_outgoing(&self) {
+        self.state().rekey_outgoing();
+    }
+
+    /// Follow the peer's [`Self::rekey_outgoing`].
+    pub fn rekey_incoming(&self) {
+        self.state().rekey_incoming();
     }
 }
 
@@ -323,6 +341,26 @@ mod tests {
         assert!(cb.decrypt(1, &ct).is_err(), "wrong nonce must fail");
         ct[0] ^= 1;
         assert!(cb.decrypt(0, &ct).is_err(), "bit flip must fail");
+    }
+
+    #[test]
+    fn rekey_switches_one_direction() {
+        let (a, b) = keys();
+        let [(ca, _), (cb, _)] = run(
+            Handshake::initiator(Initiate::Pair, &a).unwrap(),
+            Handshake::responder(HandshakeKind::Pair, &b, None).unwrap(),
+        )
+        .unwrap();
+        let before = ca.encrypt(0, b"x").unwrap();
+        ca.rekey_outgoing();
+        let after = ca.encrypt(0, b"x").unwrap();
+        assert_ne!(before, after, "same nonce, new key");
+        assert!(cb.decrypt(0, &after).is_err(), "old key can't read it");
+        cb.rekey_incoming();
+        assert_eq!(cb.decrypt(0, &after).unwrap(), b"x");
+        // The other direction is unchanged.
+        let back = cb.encrypt(1, b"y").unwrap();
+        assert_eq!(ca.decrypt(1, &back).unwrap(), b"y");
     }
 
     #[test]

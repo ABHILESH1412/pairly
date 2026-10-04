@@ -1,10 +1,11 @@
 [package]
 name = "pairly-dbus"
-description = "D-Bus interface (dev.pairly.Daemon1) shared by pairlyd, pairly-gtk and the CLI"
+description = "D-Bus interface (io.github.abhilesh1412.Pairly.Daemon1) shared by pairlyd, pairly-gtk and the CLI"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true

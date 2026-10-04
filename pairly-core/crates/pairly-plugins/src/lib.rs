@@ -6,8 +6,16 @@
 
 pub mod battery;
 pub mod clipboard;
+pub mod command;
+pub mod contacts;
+pub mod files;
 pub mod findmy;
+pub mod input;
+pub mod media;
 pub mod notification;
 mod peers;
 pub mod ping;
+pub mod power;
 pub mod share;
+pub mod sms;
+pub mod telephony;

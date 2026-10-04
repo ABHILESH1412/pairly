@@ -5,6 +5,7 @@ import android.net.Uri
 import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -68,6 +69,13 @@ import dev.pairly.android.R
 import dev.pairly.android.SelfInfo
 import dev.pairly.android.UiState
 import dev.pairly.android.bluetooth.PairlyBluetooth
+import dev.pairly.android.phone.Calls
+import dev.pairly.android.phone.PcCommands
+import dev.pairly.android.device.ClipboardSync
+import dev.pairly.android.device.PairlyAccessibility
+import dev.pairly.android.phone.SharedFiles
+import dev.pairly.android.phone.Sms
+import dev.pairly.core.ffi.CommandData
 import dev.pairly.android.notifications.PairlyNotificationListener
 import dev.pairly.android.share.SharePrefs
 import dev.pairly.android.ui.theme.PairlyTheme
@@ -94,10 +102,26 @@ fun HomeRoute() {
     val snackbar = remember { SnackbarHostState() }
     var scanning by rememberSaveable { mutableStateOf(false) }
     var choosingApps by rememberSaveable { mutableStateOf(false) }
+    var remoteId by rememberSaveable { mutableStateOf<String?>(null) }
+    var presenterId by rememberSaveable { mutableStateOf<String?>(null) }
+    var commandsFor by remember { mutableStateOf<Device?>(null) }
+    var openId by rememberSaveable { mutableStateOf<String?>(null) }
+    val ringing = remember { mutableStateListOf<String>() }
+    val pcCommands by PcCommands.byDevice.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var askBeforeReceiving by remember { mutableStateOf(SharePrefs.askBeforeReceiving(context)) }
     var notificationAccess by remember { mutableStateOf(PairlyNotificationListener.isEnabled(context)) }
     var bluetoothAllowed by remember { mutableStateOf(PairlyBluetooth.permitted(context)) }
+    var callsAllowed by remember { mutableStateOf(Calls.permitted(context)) }
+    var smsAllowed by remember { mutableStateOf(Sms.permitted(context)) }
+    var filesAllowed by remember { mutableStateOf(SharedFiles.permitted(context)) }
+    var controlAllowed by remember { mutableStateOf(PairlyAccessibility.enabled(context)) }
+    var autoClipboard by remember { mutableStateOf(ClipboardSync.auto(context)) }
+    val requestPhone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        callsAllowed = Calls.permitted(context)
+        smsAllowed = Sms.permitted(context)
+        Pairly.phonePermissionsChanged()
+    }
     val requestBluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         bluetoothAllowed = granted
         if (granted) Pairly.bluetoothChanged()
@@ -106,12 +130,64 @@ fun HomeRoute() {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         notificationAccess = PairlyNotificationListener.isEnabled(context)
         bluetoothAllowed = PairlyBluetooth.permitted(context)
+        callsAllowed = Calls.permitted(context)
+        smsAllowed = Sms.permitted(context)
+        filesAllowed = SharedFiles.permitted(context)
+        controlAllowed = PairlyAccessibility.enabled(context)
     }
     LaunchedEffect(Unit) {
         Pairly.messages.collect { snackbar.showSnackbar(it) }
     }
     if (choosingApps) {
         AppsScreen(onBack = { choosingApps = false })
+        return
+    }
+    state.devices.find { it.id == remoteId }?.let { device ->
+        RemoteInputScreen(device, onBack = { remoteId = null })
+        return
+    }
+    state.devices.find { it.id == presenterId }?.let { device ->
+        PresenterScreen(device, onBack = { presenterId = null })
+        return
+    }
+    commandsFor?.let { device ->
+        CommandsDialog(device, pcCommands[device.id].orEmpty(), onDismiss = { commandsFor = null })
+    }
+    state.devices.find { it.id == openId && it.paired }?.let { device ->
+        DeviceScreen(
+            device = device,
+            ringing = device.id in ringing,
+            transfers = transfers.values.filter { it.deviceId == device.id },
+            snackbar = snackbar,
+            actions = DeviceActions(
+                sendFiles = {
+                    sendTo = device
+                    pickFiles.launch(arrayOf("*/*"))
+                },
+                clipboard = {
+                    // In the foreground, so Android lets us read the clipboard.
+                    val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
+                    val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+                    Pairly.sendClipboard(device, text)
+                },
+                ring = { on ->
+                    if (on) ringing.add(device.id) else ringing.remove(device.id)
+                    Pairly.ring(device, on)
+                },
+                ping = { Pairly.ping(device) },
+                remote = { remoteId = device.id },
+                presenter = { presenterId = device.id },
+                commands = pcCommands[device.id]?.takeIf { it.isNotEmpty() }?.let { { commandsFor = device } },
+                power = { Pairly.power(device, it) },
+                unpair = {
+                    openId = null
+                    Pairly.unpair(device)
+                },
+                acceptTransfer = Pairly::acceptTransfer,
+                cancelTransfer = Pairly::cancelTransfer,
+            ),
+            onBack = { openId = null },
+        )
         return
     }
     if (scanning) {
@@ -128,27 +204,23 @@ fun HomeRoute() {
         state = state,
         snackbar = snackbar,
         onPair = Pairly::requestPair,
-        onPing = Pairly::ping,
-        onUnpair = Pairly::unpair,
         onScan = { scanning = true },
-        onRing = Pairly::ring,
-        onClipboard = { device ->
-            // In the foreground, so Android lets us read the clipboard.
-            val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
-            val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
-            Pairly.sendClipboard(device, text)
-        },
         notificationAccess = notificationAccess,
         onChooseApps = { choosingApps = true },
         transfers = transfers.values.toList(),
-        onSendFiles = { device ->
-            sendTo = device
-            pickFiles.launch(arrayOf("*/*"))
-        },
-        onAcceptTransfer = Pairly::acceptTransfer,
-        onCancelTransfer = Pairly::cancelTransfer,
         askBeforeReceiving = askBeforeReceiving,
         bluetoothAllowed = bluetoothAllowed,
+        phoneFeatures = PhoneFeatures(
+            calls = callsAllowed,
+            texts = smsAllowed,
+            onAllowCalls = { requestPhone.launch(Calls.PERMISSIONS) },
+            onAllowTexts = { requestPhone.launch(Sms.PERMISSIONS) },
+            files = filesAllowed,
+            onAllowFiles = { context.startActivity(SharedFiles.settingsIntent(context)) },
+            control = controlAllowed,
+            onAllowControl = { context.startActivity(PairlyAccessibility.settingsIntent()) },
+        ),
+        onOpen = { openId = it.id },
         onAllowBluetooth = {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 requestBluetooth.launch(android.Manifest.permission.BLUETOOTH_CONNECT)
@@ -157,6 +229,11 @@ fun HomeRoute() {
         onAskBeforeReceiving = {
             askBeforeReceiving = it
             SharePrefs.setAskBeforeReceiving(context, it)
+        },
+        autoClipboard = autoClipboard,
+        onAutoClipboard = {
+            autoClipboard = it
+            ClipboardSync.setAuto(context, it)
         },
     )
     prompt?.let { p ->
@@ -170,27 +247,21 @@ fun HomeScreen(
     state: UiState,
     snackbar: SnackbarHostState,
     onPair: (String) -> Unit,
-    onPing: (Device) -> Unit,
-    onUnpair: (Device) -> Unit,
     onScan: () -> Unit,
-    onRing: (Device, Boolean) -> Unit = { _, _ -> },
-    onClipboard: (Device) -> Unit = {},
     notificationAccess: Boolean = true,
     onChooseApps: () -> Unit = {},
     transfers: List<TransferData> = emptyList(),
-    onSendFiles: (Device) -> Unit = {},
-    onAcceptTransfer: (ULong) -> Unit = {},
-    onCancelTransfer: (ULong) -> Unit = {},
     askBeforeReceiving: Boolean = false,
     onAskBeforeReceiving: (Boolean) -> Unit = {},
+    autoClipboard: Boolean = true,
+    onAutoClipboard: (Boolean) -> Unit = {},
     bluetoothAllowed: Boolean = true,
     onAllowBluetooth: () -> Unit = {},
+    phoneFeatures: PhoneFeatures? = null,
+    onOpen: (Device) -> Unit = {},
 ) {
     val paired = state.devices.filter { it.paired }
     val available = state.devices.filterNot { it.paired }
-    var confirmUnpair by remember { mutableStateOf<Device?>(null) }
-    val ringing = remember { mutableStateListOf<String>() }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -241,22 +312,15 @@ fun HomeScreen(
                 if (!bluetoothAllowed) {
                     item { BluetoothCard(onGrant = onAllowBluetooth) }
                 }
+                phoneFeatures?.takeIf { !it.calls || !it.texts || !it.files || !it.control }?.let { f ->
+                    item { PhoneFeaturesCard(f) }
+                }
                 item { SectionHeader(stringResource(R.string.section_paired)) }
                 items(paired, key = { it.id }) { device ->
-                    PairedDeviceCard(
+                    DeviceSummaryCard(
                         device,
-                        ringing = device.id in ringing,
-                        onPing = { onPing(device) },
-                        onRing = { on ->
-                            if (on) ringing.add(device.id) else ringing.remove(device.id)
-                            onRing(device, on)
-                        },
-                        onClipboard = { onClipboard(device) },
-                        onUnpair = { confirmUnpair = device },
-                        transfers = transfers.filter { it.deviceId == device.id },
-                        onSendFiles = { onSendFiles(device) },
-                        onAcceptTransfer = onAcceptTransfer,
-                        onCancelTransfer = onCancelTransfer,
+                        activeTransfers = transfers.count { it.deviceId == device.id },
+                        onClick = { onOpen(device) },
                     )
                 }
                 item {
@@ -264,6 +328,19 @@ fun HomeScreen(
                         headlineContent = { Text(stringResource(R.string.share_ask_setting)) },
                         supportingContent = { Text(stringResource(R.string.share_ask_setting_body)) },
                         trailingContent = { Switch(askBeforeReceiving, onCheckedChange = onAskBeforeReceiving) },
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.clipboard_auto_setting)) },
+                        supportingContent = {
+                            Text(
+                                stringResource(
+                                    if (phoneFeatures?.control == false) R.string.clipboard_auto_needs_access else R.string.clipboard_auto_setting_body,
+                                ),
+                            )
+                        },
+                        trailingContent = { Switch(autoClipboard, onCheckedChange = onAutoClipboard) },
                     )
                 }
             }
@@ -286,22 +363,6 @@ fun HomeScreen(
         }
     }
 
-    confirmUnpair?.let { device ->
-        AlertDialog(
-            onDismissRequest = { confirmUnpair = null },
-            title = { Text(stringResource(R.string.unpair_title, device.name)) },
-            text = { Text(stringResource(R.string.unpair_body)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmUnpair = null
-                    onUnpair(device)
-                }) { Text(stringResource(R.string.action_unpair)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmUnpair = null }) { Text(stringResource(R.string.action_cancel)) }
-            },
-        )
-    }
 }
 
 @Composable
@@ -315,88 +376,7 @@ private fun SectionHeader(text: String) {
 }
 
 @Composable
-private fun PairedDeviceCard(
-    device: Device,
-    ringing: Boolean,
-    onPing: () -> Unit,
-    onRing: (Boolean) -> Unit,
-    onClipboard: () -> Unit,
-    onUnpair: () -> Unit,
-    transfers: List<TransferData> = emptyList(),
-    onSendFiles: () -> Unit = {},
-    onAcceptTransfer: (ULong) -> Unit = {},
-    onCancelTransfer: (ULong) -> Unit = {},
-) {
-    val connected = device.link != null
-    var menu by remember { mutableStateOf(false) }
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                DeviceIcon(device.kind, Modifier.size(40.dp))
-                Spacer(Modifier.size(16.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(device.name, style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        status(device),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                    )
-                    device.battery?.let { b ->
-                        Text(
-                            stringResource(
-                                if (b.charging) R.string.battery_charging else R.string.battery_level,
-                                b.percent.toInt(),
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            transfers.forEach { t ->
-                TransferRow(t, onAccept = { onAcceptTransfer(t.id) }, onCancel = { onCancelTransfer(t.id) })
-            }
-            FlowRow(
-                Modifier.fillMaxWidth().padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                itemVerticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box {
-                    TextButton(onClick = { menu = true }) { Text(stringResource(R.string.action_more)) }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.action_ping)) },
-                            enabled = connected,
-                            onClick = {
-                                menu = false
-                                onPing()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.action_unpair)) },
-                            onClick = {
-                                menu = false
-                                onUnpair()
-                            },
-                        )
-                    }
-                }
-                OutlinedButton(onClick = { onRing(!ringing) }, enabled = connected) {
-                    Text(stringResource(if (ringing) R.string.action_stop_ring else R.string.action_ring))
-                }
-                FilledTonalButton(onClick = onSendFiles, enabled = connected) {
-                    Text(stringResource(R.string.action_send_files))
-                }
-                FilledTonalButton(onClick = onClipboard, enabled = connected) {
-                    Text(stringResource(R.string.action_send_clipboard))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TransferRow(t: TransferData, onAccept: () -> Unit, onCancel: () -> Unit) {
+internal fun TransferRow(t: TransferData, onAccept: () -> Unit, onCancel: () -> Unit) {
     val context = LocalContext.current
     fun size(bytes: ULong) = Formatter.formatShortFileSize(context, bytes.toLong())
     val waitingForMe = t.incoming && t.status == TransferStatus.Waiting
@@ -428,7 +408,7 @@ private fun TransferRow(t: TransferData, onAccept: () -> Unit, onCancel: () -> U
 }
 
 @Composable
-private fun status(device: Device): String {
+internal fun status(device: Device): String {
     val link = device.link ?: return stringResource(R.string.status_offline)
     val linkName = stringResource(
         when (link) {
@@ -452,7 +432,7 @@ private fun iconFor(kind: DeviceKind?): Int = when (kind) {
 }
 
 @Composable
-private fun DeviceIcon(kind: DeviceKind?, modifier: Modifier = Modifier) {
+internal fun DeviceIcon(kind: DeviceKind?, modifier: Modifier = Modifier) {
     Icon(
         painterResource(iconFor(kind)),
         contentDescription = null,
@@ -522,9 +502,95 @@ private fun HomeScreenPreview() {
             state = UiState(self = SelfInfo("moto g85", "x"), devices = devices),
             snackbar = remember { SnackbarHostState() },
             onPair = {},
-            onPing = {},
-            onUnpair = {},
             onScan = {},
         )
     }
+}
+
+/** Which phone features have their permissions, and how to ask for the rest. */
+data class PhoneFeatures(
+    val calls: Boolean,
+    val texts: Boolean,
+    val onAllowCalls: () -> Unit,
+    val onAllowTexts: () -> Unit,
+    val files: Boolean = true,
+    val onAllowFiles: () -> Unit = {},
+    /** Pairly's accessibility service: lock / power off from a PC, and copy → PC. */
+    val control: Boolean = true,
+    val onAllowControl: () -> Unit = {},
+)
+
+@Composable
+private fun PhoneFeaturesCard(f: PhoneFeatures) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(vertical = 8.dp)) {
+            if (!f.calls) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.feature_calls)) },
+                    supportingContent = { Text(stringResource(R.string.feature_calls_body)) },
+                    trailingContent = { FilledTonalButton(onClick = f.onAllowCalls) { Text(stringResource(R.string.feature_allow)) } },
+                )
+            }
+            if (!f.files) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.feature_files)) },
+                    supportingContent = { Text(stringResource(R.string.feature_files_body)) },
+                    trailingContent = { FilledTonalButton(onClick = f.onAllowFiles) { Text(stringResource(R.string.feature_allow)) } },
+                )
+            }
+            if (!f.control) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.feature_control)) },
+                    supportingContent = { Text(stringResource(R.string.feature_control_body)) },
+                    trailingContent = { FilledTonalButton(onClick = f.onAllowControl) { Text(stringResource(R.string.feature_allow)) } },
+                )
+            }
+            if (!f.texts) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.feature_texts)) },
+                    supportingContent = { Text(stringResource(R.string.feature_texts_body)) },
+                    trailingContent = { FilledTonalButton(onClick = f.onAllowTexts) { Text(stringResource(R.string.feature_allow)) } },
+                )
+            }
+        }
+    }
+}
+
+/** Pick one of a PC's commands, confirm, run. */
+@Composable
+private fun CommandsDialog(device: Device, commands: List<CommandData>, onDismiss: () -> Unit) {
+    var confirm by remember { mutableStateOf<CommandData?>(null) }
+    val pending = confirm
+    if (pending != null) {
+        AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text(stringResource(R.string.command_confirm_title, pending.name)) },
+            text = { Text(stringResource(R.string.command_confirm_body, device.name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    Pairly.runCommand(device, pending)
+                    confirm = null
+                    onDismiss()
+                }) { Text(stringResource(R.string.command_run)) }
+            },
+            dismissButton = { TextButton(onClick = { confirm = null }) { Text(stringResource(R.string.action_cancel)) } },
+        )
+        return
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.commands_title, device.name)) },
+        text = {
+            Column {
+                commands.forEach { c ->
+                    ListItem(
+                        headlineContent = { Text(c.name) },
+                        modifier = Modifier.clickable { confirm = c },
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
+    )
 }

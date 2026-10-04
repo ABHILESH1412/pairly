@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -9,15 +11,37 @@ android {
     ndkVersion = libs.versions.ndk.get()
 
     defaultConfig {
-        applicationId = "dev.pairly.android"
+        applicationId = "io.github.abhilesh1412.pairly"
         minSdk = 26
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
     }
 
+    // Release signing comes from keystore.properties next to this project (never committed):
+    //   storeFile=/path/to/pairly-release.jks
+    //   storePassword=…
+    //   keyAlias=pairly
+    //   keyPassword=…
+    // Without it, release builds are signed with the debug key: fine for testing on your own
+    // phone, never for publishing (scripts/release.sh refuses).
+    val signing = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { file ->
+        Properties().apply { file.inputStream().use(::load) }
+    }
+    signingConfigs {
+        if (signing != null) {
+            create("release") {
+                storeFile = file(signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -57,9 +81,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.exifinterface)
     implementation(libs.zxing.core)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

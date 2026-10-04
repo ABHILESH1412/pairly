@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use pairly_dbus::{DaemonProxy, Device, Transfer};
+use pairly_dbus::{DaemonProxy, Device, Player, Transfer};
 use relm4::adw::prelude::*;
 use relm4::{Component, ComponentParts, ComponentSender, Sender, adw, gtk};
 
@@ -39,6 +39,8 @@ pub struct App {
     ringing: std::collections::HashSet<String>,
     /// Unfinished transfers, by id.
     transfers: BTreeMap<u64, Transfer>,
+    /// Media players on each device.
+    players: HashMap<String, Vec<Player>>,
 }
 
 #[derive(Debug)]
@@ -58,6 +60,19 @@ pub enum Input {
     SendText(String, String),
     AcceptTransfer(u64),
     CancelTransfer(u64),
+    /// Open the Messages window for a phone.
+    OpenMessages(String),
+    OpenCommands,
+    /// Open the Contacts window for a phone.
+    OpenContacts(String),
+    /// Browse a phone's files.
+    OpenFiles(String),
+    /// Lock a phone, or power it off / restart it: (device, "lock" | "poweroff" | "restart").
+    Power(String, &'static str),
+    /// Ask whether to power off or restart a phone.
+    AskPower(String),
+    /// Control a device's player: (device, player, action).
+    Media(String, String, &'static str),
     Unpair(String),
     ShowQr,
     QrClosed,
@@ -87,6 +102,8 @@ pub enum Cmd {
     Qr(Result<(String, u32), String>),
     Transfers(Vec<Transfer>),
     TransferChanged(Transfer),
+    PlayersChanged(String),
+    Players(String, Vec<Player>),
     Failed(String),
     Done,
 }
@@ -181,6 +198,18 @@ impl App {
         });
     }
 
+    fn refresh_players(&self, sender: &ComponentSender<Self>, device: String) {
+        let Some(daemon) = self.daemon.clone() else {
+            return;
+        };
+        sender.oneshot_command(async move {
+            match daemon.list_players(&device).await {
+                Ok(players) => Cmd::Players(device, players),
+                Err(_) => Cmd::Done,
+            }
+        });
+    }
+
     fn refresh_transfers(&self, sender: &ComponentSender<Self>) {
         let Some(daemon) = self.daemon.clone() else {
             return;
@@ -248,6 +277,7 @@ async fn forward_signals(daemon: &DaemonProxy<'static>, out: &Sender<Cmd>) -> zb
     let mut finished = daemon.receive_pairing_finished().await?;
     let mut pings = daemon.receive_ping_received().await?;
     let mut transfers = daemon.receive_transfer_changed().await?;
+    let mut players = daemon.receive_players_changed().await?;
     let mut owner = daemon.inner().receive_owner_changed().await?;
     loop {
         let cmd = tokio::select! {
@@ -265,6 +295,7 @@ async fn forward_signals(daemon: &DaemonProxy<'static>, out: &Sender<Cmd>) -> zb
                 Cmd::PingReceived { name: a.name.to_owned(), message: a.message.to_owned() }
             }
             Some(s) = transfers.next() => Cmd::TransferChanged(s.args()?.transfer),
+            Some(s) = players.next() => Cmd::PlayersChanged(s.args()?.id.to_owned()),
             Some(new_owner) = owner.next() => match new_owner {
                 Some(_) => Cmd::Connected(daemon.clone(), daemon.get_identity().await?),
                 None => Cmd::Unavailable("Pairly's background service stopped.".to_owned()),
@@ -294,6 +325,7 @@ impl Component for App {
     }
 
     fn init(init: Init, window: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
+        install_css();
         // Launching Pairly again brings this window to the front.
         relm4::main_application().connect_activate({
             let window = window.clone();
@@ -313,6 +345,15 @@ impl Component for App {
         let sidebar_header = adw::HeaderBar::new();
         sidebar_header.set_title_widget(Some(&title));
         sidebar_header.pack_end(&pair_button);
+        let commands_button = gtk::Button::builder()
+            .icon_name("utilities-terminal-symbolic")
+            .tooltip_text("Commands Your Phone Can Run")
+            .build();
+        commands_button.connect_clicked({
+            let sender = sender.clone();
+            move |_| sender.input(Input::OpenCommands)
+        });
+        sidebar_header.pack_start(&commands_button);
         let list = gtk::ListBox::new();
         list.add_css_class("navigation-sidebar");
         list.connect_row_activated({
@@ -384,7 +425,7 @@ impl Component for App {
             .build();
 
         // `app.pair` opens the QR dialog (also reachable as
-        // `gapplication action dev.pairly.Pairly pair`, e.g. from the tray).
+        // `gapplication action io.github.abhilesh1412.Pairly pair`, e.g. from the tray).
         let pair_action = gtk::gio::SimpleAction::new("pair", None);
         pair_action.connect_activate({
             let sender = sender.clone();
@@ -413,6 +454,7 @@ impl Component for App {
             qr_dialog: None,
             ringing: std::collections::HashSet::new(),
             transfers: BTreeMap::new(),
+            players: HashMap::new(),
         };
         let mut widgets = Widgets {
             toasts,
@@ -440,6 +482,7 @@ impl Component for App {
     ) {
         match message {
             Input::Select(id) => {
+                self.refresh_players(&sender, id.clone());
                 self.selected = Some(id);
                 widgets.split.set_show_content(true);
             }
@@ -458,6 +501,42 @@ impl Component for App {
                     self.ringing.remove(&id);
                 }
                 self.call(&sender, move |d| async move { d.ring(&id, on).await });
+            }
+            Input::Power(id, action) => {
+                let name = self.name_of(&id);
+                self.call(
+                    &sender,
+                    move |d| async move { d.phone_power(&id, action).await },
+                );
+                let what = match action {
+                    "lock" => "Locking",
+                    "restart" => "Restarting",
+                    _ => "Powering off",
+                };
+                Self::toast(widgets, &format!("{what} {name}…"));
+            }
+            Input::AskPower(id) => {
+                let dialog = adw::AlertDialog::new(
+                    Some(&format!("Power Off {}?", self.name_of(&id))),
+                    Some("You'll need to turn it back on at the phone."),
+                );
+                dialog.add_responses(&[
+                    ("cancel", "Cancel"),
+                    ("restart", "Restart"),
+                    ("poweroff", "Power Off"),
+                ]);
+                dialog.set_response_appearance("poweroff", adw::ResponseAppearance::Destructive);
+                dialog.set_close_response("cancel");
+                let sender = sender.clone();
+                dialog.connect_response(None, move |_, response| {
+                    let action = match response {
+                        "poweroff" => "poweroff",
+                        "restart" => "restart",
+                        _ => return,
+                    };
+                    sender.input(Input::Power(id.clone(), action));
+                });
+                dialog.present(Some(window));
             }
             Input::SendClipboard(id) => {
                 let name = self.name_of(&id);
@@ -522,6 +601,39 @@ impl Component for App {
                 Self::toast(widgets, &format!("Sent {what} to {name}"));
                 return;
             }
+            Input::OpenMessages(id) => {
+                if let Some(daemon) = self.daemon.clone() {
+                    let name = self.name_of(&id);
+                    crate::messages::open(window, daemon, id, &name);
+                }
+                return;
+            }
+            Input::OpenFiles(id) => {
+                if let Some(daemon) = self.daemon.clone() {
+                    let name = self.name_of(&id);
+                    crate::files::open(window, daemon, id, &name);
+                }
+                return;
+            }
+            Input::OpenContacts(id) => {
+                if let Some(daemon) = self.daemon.clone() {
+                    let name = self.name_of(&id);
+                    crate::contacts::open(window, daemon, id, &name);
+                }
+                return;
+            }
+            Input::OpenCommands => {
+                if let Some(daemon) = self.daemon.clone() {
+                    crate::commands::open(window, daemon);
+                }
+                return;
+            }
+            Input::Media(device, player, action) => {
+                self.call(&sender, move |d| async move {
+                    d.media_control(&device, &player, action, 0).await
+                });
+                return;
+            }
             Input::AcceptTransfer(t) => {
                 self.call(&sender, move |d| async move { d.accept_transfer(t).await });
                 return;
@@ -583,6 +695,9 @@ impl Component for App {
                 self.devices.clear();
             }
             Cmd::Devices(devices) => {
+                for d in devices.iter().filter(|d| d.paired && d.is_connected()) {
+                    self.refresh_players(&sender, d.id.clone());
+                }
                 self.devices = devices;
                 let known = self
                     .selected
@@ -644,6 +759,13 @@ impl Component for App {
                     Err(e) => Self::toast(widgets, &format!("Couldn't create a pairing code: {e}")),
                 }
                 return;
+            }
+            Cmd::PlayersChanged(device) => {
+                self.refresh_players(&sender, device);
+                return;
+            }
+            Cmd::Players(device, players) => {
+                self.players.insert(device, players);
             }
             Cmd::Transfers(transfers) => {
                 self.transfers = transfers.into_iter().map(|t| (t.id, t)).collect();
@@ -714,9 +836,11 @@ impl App {
                     .filter(|t| t.device == device.id)
                     .collect();
                 w.transfer_rows.clear();
+                let players = self.players.get(&device.id).map_or(&[][..], Vec::as_slice);
                 w.device_slot.set_child(Some(&device_page(
                     device,
                     ringing,
+                    players,
                     &transfers,
                     &mut w.transfer_rows,
                     sender,
@@ -784,18 +908,8 @@ fn device_row(d: &Device, sender: &ComponentSender<App>) -> gtk::ListBoxRow {
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
-    let status = gtk::Label::builder()
-        .label(status_text(d))
-        .xalign(0.0)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .build();
-    status.add_css_class("caption");
-    status.add_css_class(if d.is_connected() {
-        "success"
-    } else {
-        "dim-label"
-    });
-    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let status = status_pill(d, true);
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
     text.append(&name);
     text.append(&status);
     let row_box = gtk::Box::builder()
@@ -896,33 +1010,10 @@ fn transfer_toast(w: &Widgets, window: &adw::ApplicationWindow, t: &Transfer) {
     w.toasts.add_toast(toast);
 }
 
-/// A row with a single button that sends `msg`.
-fn button_row(
-    title: &str,
-    subtitle: &str,
-    label: &str,
-    enabled: bool,
-    sender: &ComponentSender<App>,
-    msg: impl Fn() -> Input + 'static,
-) -> adw::ActionRow {
-    let button = gtk::Button::builder()
-        .label(label)
-        .valign(gtk::Align::Center)
-        .sensitive(enabled)
-        .build();
-    let sender = sender.clone();
-    button.connect_clicked(move |_| sender.input(msg()));
-    let row = adw::ActionRow::builder()
-        .title(title)
-        .subtitle(subtitle)
-        .build();
-    row.add_suffix(&button);
-    row
-}
-
 fn device_page(
     d: &Device,
     ringing: bool,
+    players: &[Player],
     transfers: &[&Transfer],
     rows: &mut HashMap<u64, (adw::ActionRow, gtk::ProgressBar)>,
     sender: &ComponentSender<App>,
@@ -934,15 +1025,11 @@ fn device_page(
     icon.add_css_class("dim-label");
     let name = gtk::Label::new(Some(&d.name));
     name.add_css_class("title-1");
-    let status = gtk::Label::new(Some(&status_text(d)));
-    status.add_css_class(if d.is_connected() {
-        "success"
-    } else {
-        "dim-label"
-    });
+    let status = status_pill(d, false);
+    status.set_halign(gtk::Align::Center);
     let header = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
+        .spacing(8)
         .margin_bottom(12)
         .build();
     header.append(&icon);
@@ -955,68 +1042,132 @@ fn device_page(
     let actions = adw::PreferencesGroup::new();
     if d.paired {
         let (on, id) = (d.is_connected(), d.id.clone());
-        let files_subtitle = if on {
-            "Or drop files on this window"
-        } else {
-            "Available when connected"
+        let grid = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .homogeneous(true)
+            .min_children_per_line(2)
+            .max_children_per_line(4)
+            .column_spacing(12)
+            .row_spacing(12)
+            .build();
+        let add = |button: gtk::Button| {
+            grid.append(&button);
+            if let Some(child) = button.parent() {
+                child.set_focusable(false);
+            }
         };
-        actions.add(&button_row(
-            "Files",
-            files_subtitle,
-            "Send…",
+        let with = |f: fn(String) -> Input| {
+            let id = id.clone();
+            move || f(id.clone())
+        };
+        add(tile(
+            "document-send-symbolic",
+            "Send Files",
+            "Or drop them here",
             on,
             sender,
-            {
-                let id = id.clone();
-                move || Input::PickFiles(id.clone())
-            },
+            with(Input::PickFiles),
         ));
-        actions.add(&button_row(
+        add(tile(
+            "insert-link-symbolic",
             "Link or Text",
-            "Links open in the browser; text is copied",
-            "Send…",
+            "Opens or copies there",
             on,
             sender,
-            {
-                let id = id.clone();
-                move || Input::AskText(id.clone())
-            },
+            with(Input::AskText),
         ));
-        actions.add(&button_row(
+        add(tile(
+            "edit-paste-symbolic",
             "Clipboard",
-            "Send what you copied on this PC",
-            "Send",
+            "Send what you copied",
             on,
             sender,
-            {
-                let id = id.clone();
-                move || Input::SendClipboard(id.clone())
-            },
+            with(Input::SendClipboard),
         ));
-        let (ring_label, ring_subtitle) = if ringing {
-            ("Stop", "Ringing…")
+        if d.device_type == "phone" {
+            add(tile(
+                "mail-unread-symbolic",
+                "Messages",
+                "Read and send texts",
+                on,
+                sender,
+                with(Input::OpenMessages),
+            ));
+        }
+        let ring = if ringing {
+            tile(
+                "find-location-symbolic",
+                "Stop Ringing",
+                "Ringing now…",
+                on,
+                sender,
+                with(|id| Input::Ring(id, false)),
+            )
         } else {
-            ("Ring", "Ring loudly, even on silent, to find it")
+            tile(
+                "find-location-symbolic",
+                "Find My Phone",
+                "Ring it, even on silent",
+                on,
+                sender,
+                with(|id| Input::Ring(id, true)),
+            )
         };
-        actions.add(&button_row(
-            "Find My Phone",
-            ring_subtitle,
-            ring_label,
+        if ringing {
+            ring.add_css_class("ringing");
+        }
+        add(ring);
+        add(tile(
+            "preferences-system-notifications-symbolic",
+            "Ping",
+            "Show a notification",
             on,
             sender,
-            {
-                let id = id.clone();
-                move || Input::Ring(id.clone(), !ringing)
-            },
+            with(Input::Ping),
         ));
-        actions.add(&button_row(
-            "Ping",
-            "Make it show a notification",
-            "Ping",
-            on,
+        if d.device_type == "phone" {
+            add(tile(
+                "folder-symbolic",
+                "Browse Files",
+                "The phone's storage",
+                on,
+                sender,
+                with(Input::OpenFiles),
+            ));
+            add(tile(
+                "x-office-address-book-symbolic",
+                "Contacts & Calls",
+                "Call or text from here",
+                on,
+                sender,
+                with(Input::OpenContacts),
+            ));
+            add(tile(
+                "system-lock-screen-symbolic",
+                "Lock Phone",
+                "Lock its screen now",
+                on,
+                sender,
+                with(|id| Input::Power(id, "lock")),
+            ));
+            add(tile(
+                "system-shutdown-symbolic",
+                "Power Off",
+                "Power off or restart",
+                on,
+                sender,
+                with(Input::AskPower),
+            ));
+        }
+        add(tile(
+            "utilities-terminal-symbolic",
+            "Commands",
+            "What it may run here",
+            true,
             sender,
-            move || Input::Ping(id.clone()),
+            || Input::OpenCommands,
         ));
+        actions.add(&grid);
     } else {
         let pair_button = gtk::Button::builder()
             .label("Pair")
@@ -1035,6 +1186,12 @@ fn device_page(
         actions.add(&pair);
     }
     page.add(&actions);
+
+    if let Some(p) = players.iter().find(|p| p.playing).or(players.first())
+        && d.is_connected()
+    {
+        page.add(&now_playing(&d.id, p, sender));
+    }
 
     if !transfers.is_empty() {
         let group = adw::PreferencesGroup::builder().title("Transfers").build();
@@ -1094,6 +1251,173 @@ fn device_page(
         page.add(&danger);
     }
     page.upcast()
+}
+
+/// One action in the device page's grid: an icon, a name and a hint.
+fn tile(
+    icon: &str,
+    title: &str,
+    hint: &str,
+    enabled: bool,
+    sender: &ComponentSender<App>,
+    msg: impl Fn() -> Input + 'static,
+) -> gtk::Button {
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_pixel_size(32);
+    let name = gtk::Label::new(Some(title));
+    name.add_css_class("heading");
+    let hint = gtk::Label::builder()
+        .label(hint)
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .build();
+    hint.add_css_class("caption");
+    hint.add_css_class("dim-label");
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+    content.append(&image);
+    content.append(&name);
+    content.append(&hint);
+    let button = gtk::Button::builder()
+        .child(&content)
+        .sensitive(enabled)
+        .build();
+    button.add_css_class("card");
+    button.add_css_class("action-tile");
+    let sender = sender.clone();
+    button.connect_clicked(move |_| sender.input(msg()));
+    button
+}
+
+/// "● Connected · Local network · 3 ms" in green, "● Offline" in red, "● Available" in accent.
+fn status_pill(d: &Device, short: bool) -> gtk::Box {
+    let kind = match (d.paired, d.is_connected()) {
+        (false, _) => "available",
+        (true, true) => "connected",
+        (true, false) => "offline",
+    };
+    let dot = gtk::Box::builder().valign(gtk::Align::Center).build();
+    dot.add_css_class("status-dot");
+    let text = if short {
+        match kind {
+            "connected" => "Connected".to_owned(),
+            "offline" => "Offline".to_owned(),
+            _ => "Available".to_owned(),
+        }
+    } else {
+        status_text(d)
+    };
+    let label = gtk::Label::builder()
+        .label(text)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    let pill = gtk::Box::builder()
+        .spacing(8)
+        .halign(gtk::Align::Start)
+        .build();
+    pill.add_css_class("status-pill");
+    pill.add_css_class(kind);
+    if short {
+        pill.add_css_class("compact");
+    }
+    pill.append(&dot);
+    pill.append(&label);
+    pill
+}
+
+const CSS: &str = "
+.status-pill { padding: 4px 12px; border-radius: 999px; font-weight: bold; font-size: smaller; }
+.status-pill .status-dot { min-width: 8px; min-height: 8px; border-radius: 999px; }
+.status-pill.connected { background: alpha(@success_color, 0.15); color: @success_color; }
+.status-pill.connected .status-dot { background: @success_color; }
+.status-pill.offline { background: alpha(@error_color, 0.15); color: @error_color; }
+.status-pill.offline .status-dot { background: @error_color; }
+.status-pill.available { background: alpha(@accent_color, 0.15); color: @accent_color; }
+.status-pill.available .status-dot { background: @accent_color; }
+.status-pill.compact { padding: 2px 8px; }
+.action-tile { padding: 18px 8px; min-height: 110px; }
+.action-tile.ringing { background: alpha(@error_color, 0.18); }
+";
+
+fn install_css() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(CSS);
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
+/// The device's current player with previous / play-pause / next.
+fn now_playing(device: &str, p: &Player, sender: &ComponentSender<App>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Now Playing")
+        .build();
+    let title = if p.title.is_empty() {
+        p.name.as_str()
+    } else {
+        p.title.as_str()
+    };
+    let subtitle = match (p.artist.is_empty(), p.title.is_empty()) {
+        (false, _) => format!("{} · {}", p.artist, p.name),
+        (true, false) => p.name.clone(),
+        (true, true) => String::new(),
+    };
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .title_lines(1)
+        .subtitle_lines(1)
+        .build();
+    let art = gtk::Image::from_icon_name("audio-x-generic-symbolic");
+    art.set_pixel_size(48);
+    if let Some(path) = p.art_url.strip_prefix("file://") {
+        art.set_from_file(Some(path));
+    }
+    row.add_prefix(&art);
+    let button = |icon: &str, tooltip: &str, enabled: bool, action: &'static str| {
+        let b = gtk::Button::builder()
+            .icon_name(icon)
+            .tooltip_text(tooltip)
+            .valign(gtk::Align::Center)
+            .sensitive(enabled)
+            .build();
+        b.add_css_class("flat");
+        let (sender, device, player) = (sender.clone(), device.to_owned(), p.id.clone());
+        b.connect_clicked(move |_| {
+            sender.input(Input::Media(device.clone(), player.clone(), action))
+        });
+        b
+    };
+    row.add_suffix(&button(
+        "media-skip-backward-symbolic",
+        "Previous",
+        p.can_previous,
+        "previous",
+    ));
+    let (icon, tip) = if p.playing {
+        ("media-playback-pause-symbolic", "Pause")
+    } else {
+        ("media-playback-start-symbolic", "Play")
+    };
+    let play = button(icon, tip, p.can_play || p.can_pause, "play_pause");
+    play.remove_css_class("flat");
+    play.add_css_class("circular");
+    row.add_suffix(&play);
+    row.add_suffix(&button(
+        "media-skip-forward-symbolic",
+        "Next",
+        p.can_next,
+        "next",
+    ));
+    group.add(&row);
+    group
 }
 
 fn transfer_row(t: &Transfer, sender: &ComponentSender<App>) -> (adw::ActionRow, gtk::ProgressBar) {

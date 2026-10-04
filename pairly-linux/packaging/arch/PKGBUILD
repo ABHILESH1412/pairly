@@ -1,0 +1,44 @@
+# Maintainer: Abhilesh Singh <sabhilesh260@gmail.com>
+pkgname=pairly
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Connect your Android phone and Linux PC: notifications, texts, calls, files, clipboard, media and remote input'
+arch=('x86_64' 'aarch64')
+url='https://github.com/ABHILESH1412/pairly'
+license=('GPL-3.0-or-later')
+depends=('dbus' 'gdk-pixbuf2' 'glib2' 'glibc' 'gtk4' 'hicolor-icon-theme' 'libadwaita' 'libgcc' 'pango')
+makedepends=('cargo')
+optdepends=(
+  'bluez: connect over Bluetooth when there is no network'
+  'gnome-keyring: keep the device identity in the keyring (or another Secret Service)'
+  'xdg-desktop-portal: remote input on GNOME and KDE'
+)
+install=pairly.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP') # replaced by `updpkgsums` once the release tag exists
+
+prepare() {
+  cd "$pkgname-$pkgver/pairly-linux"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver/pairly-linux"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver/pairly-linux"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo test --frozen --release --workspace
+}
+
+package() {
+  cd "$pkgname-$pkgver/pairly-linux"
+  make install DESTDIR="$pkgdir" PREFIX=/usr UNITDIR=/usr/lib/systemd/user
+  install -Dm644 ../LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 ../docs/security.md "$pkgdir/usr/share/doc/$pkgname/security.md"
+}

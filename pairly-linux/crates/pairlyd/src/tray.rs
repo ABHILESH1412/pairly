@@ -46,7 +46,7 @@ impl PairlyTray {
 
 impl Tray for PairlyTray {
     fn id(&self) -> String {
-        "dev.pairly.Pairly".into()
+        "io.github.abhilesh1412.Pairly".into()
     }
 
     fn title(&self) -> String {
@@ -54,7 +54,7 @@ impl Tray for PairlyTray {
     }
 
     fn icon_name(&self) -> String {
-        "dev.pairly.Pairly-symbolic".into()
+        "io.github.abhilesh1412.Pairly-symbolic".into()
     }
 
     fn tool_tip(&self) -> ToolTip {

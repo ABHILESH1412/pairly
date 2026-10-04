@@ -150,6 +150,10 @@ impl ShareService {
         Ok(())
     }
 
+    pub fn download_dir(&self) -> &Path {
+        &self.settings.download_dir
+    }
+
     pub fn cancel(&self, id: u64) -> Result<()> {
         Ok(self.plugin.cancel(id)?)
     }
@@ -203,7 +207,7 @@ fn numbered(name: &str, n: u32) -> String {
     }
 }
 
-fn unique_path(dir: &Path, name: &str) -> PathBuf {
+pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
     (0..1000)
         .map(|n| dir.join(numbered(name, n)))
         .find(|p| !p.exists())

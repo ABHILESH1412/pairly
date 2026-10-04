@@ -2,4 +2,6 @@
 <paths>
     <!-- Received files on Android 8-9 (see share/Downloads.kt). -->
     <external-files-path name="downloads" path="Download/Pairly/" />
+    <!-- Picture messages being sent (see phone/Sms.kt). -->
+    <cache-path name="mms" path="mms/" />
 </paths>

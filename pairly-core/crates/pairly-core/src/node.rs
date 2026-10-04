@@ -44,6 +44,9 @@ pub struct NodeConfig {
     pub relay: Option<String>,
     /// This device's Bluetooth address, announced to paired peers so they can dial it.
     pub bluetooth: Option<String>,
+    /// Pad what we send over relay links to 256-byte steps, so the relay learns less from
+    /// message sizes (costs about 128 bytes per frame).
+    pub relay_padding: bool,
     pub session: SessionConfig,
 }
 
@@ -59,6 +62,7 @@ impl NodeConfig {
             qr_timeout: Duration::from_secs(300),
             relay: None,
             bluetooth: None,
+            relay_padding: true,
             session: SessionConfig::default(),
         }
     }
@@ -158,6 +162,14 @@ impl NodeBuilder {
             Some(r) => r,
             None => Registry::open_in_memory()?,
         };
+        registry.seal_with(pairly_crypto::FieldKey::derive(&identity, "registry"))?;
+        let stale = registry.drop_unreadable()?;
+        if stale > 0 {
+            tracing::warn!(
+                devices = stale,
+                "removed pairings made under a previous identity; pair those devices again"
+            );
+        }
 
         let mut routes = HashMap::new();
         let (mut incoming, mut outgoing) = (Vec::new(), Vec::new());
@@ -197,6 +209,7 @@ impl NodeBuilder {
             events,
             state: Mutex::new(State::default()),
             tasks: Mutex::new(Vec::new()),
+            inbound: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_HANDSHAKES)),
         });
 
         let (tx, rx) = mpsc::channel(256);
@@ -300,7 +313,7 @@ impl PairlyNode {
         {
             return Err(CoreError::Unsupported(packet.ty));
         }
-        Ok(peer.session.send(packet))
+        peer.session.send(packet)
     }
 
     /// Tell every transport that the network changed (apps call this from OS callbacks).
@@ -333,6 +346,8 @@ struct State {
     /// Wakes a device's reconnect or upgrade loop early when a new way to reach it appears.
     wake: HashMap<DeviceId, Arc<Notify>>,
     pairings: HashMap<DeviceId, oneshot::Sender<bool>>,
+    /// Incoming pairing requests are refused until then (one was just declined or ignored).
+    pairing_cooldown: Option<Instant>,
     /// The QR code currently on screen.
     qr: Option<ActiveQr>,
     shutdown: bool,
@@ -362,6 +377,14 @@ impl Dial {
 }
 
 /// Head start each candidate gets before the next one is dialed.
+/// Inbound connections allowed in their handshake at once; more are dropped unanswered, so a
+/// flood of half-open connections can't pile up.
+const MAX_INBOUND_HANDSHAKES: usize = 16;
+/// Pairing prompts waiting for the user at once.
+const MAX_PENDING_PAIRINGS: usize = 3;
+/// After an incoming request is declined or ignored, refuse new ones this long (the device ID
+/// is free to change, so this is per node, not per device).
+const PAIRING_COOLDOWN: Duration = Duration::from_secs(10);
 const DIAL_STAGGER: Duration = Duration::from_millis(200);
 /// First retry delay when moving to a better link fails (doubles up to the maximum).
 const UPGRADE_RETRY: Duration = Duration::from_secs(10);
@@ -379,6 +402,8 @@ struct Inner {
     events: broadcast::Sender<NodeEvent>,
     state: Mutex<State>,
     tasks: Mutex<Vec<AbortHandle>>,
+    /// Inbound connections still in their (unauthenticated) handshake.
+    inbound: Arc<tokio::sync::Semaphore>,
 }
 
 impl Inner {
@@ -655,27 +680,35 @@ impl Inner {
         stream: BoxDuplex,
         transport: TransportKind,
         remote: Option<String>,
+        permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<()> {
-        let ch = channel::accept(stream, transport, &self.identity, &Policy(self)).await?;
-        // A paired device dialed us over Bluetooth: now we can dial it back (phones can't tell
-        // us their address themselves). Only after Noise authenticated it.
-        if transport == TransportKind::Bluetooth
-            && let Some(address) = remote.as_deref()
-            && self.is_paired(&ch.peer_id())
-            && pairly_proto::packets::is_bluetooth_address(address)
-            && self
-                .registry
-                .set_bluetooth(&ch.peer_id(), address)
-                .unwrap_or(false)
-        {
-            self.update_transport_peers();
-        }
+        let ch = channel::accept(stream, transport, &self.identity, &Policy(self)).await;
+        // Authenticated (or failed): no longer a half-open connection.
+        drop(permit);
+        let mut ch = ch?;
         // A QR code pairs exactly once: the first completed handshake consumes it.
         if ch.info.kind == HandshakeKind::PairPsk && self.lock().qr.take().is_none() {
             return Err(CoreError::PairingDisabled);
         }
         match ch.info.kind {
-            HandshakeKind::Reconnect => self.establish(ch).await,
+            HandshakeKind::Reconnect => {
+                let peer = self.exchange_identity(&mut ch).await?;
+                // A paired device dialed us over Bluetooth: now we can dial it back (phones
+                // can't tell us their address themselves). Only once it proved its key live: a
+                // replayed first handshake message completes the responder's side of IK, but
+                // can't decrypt or send the identity.
+                if transport == TransportKind::Bluetooth
+                    && let Some(address) = remote.as_deref()
+                    && pairly_proto::packets::is_bluetooth_address(address)
+                    && self
+                        .registry
+                        .set_bluetooth(&ch.peer_id(), address)
+                        .unwrap_or(false)
+                {
+                    self.update_transport_peers();
+                }
+                self.attach(ch, peer).await
+            }
             HandshakeKind::Pair | HandshakeKind::PairPsk => self.run_pairing(ch).await,
         }
     }
@@ -699,8 +732,10 @@ impl Inner {
         self.attach(ch, peer).await
     }
 
-    async fn attach(self: &Arc<Self>, ch: Channel, identity: Identity) -> Result<()> {
+    async fn attach(self: &Arc<Self>, mut ch: Channel, identity: Identity) -> Result<()> {
         let id = ch.peer_id();
+        ch.writer
+            .set_padding(ch.transport == TransportKind::Relay && self.config.relay_padding);
         if !self.registry.is_paired_key(&ch.info.remote)? {
             return Err(CoreError::NotPaired(id));
         }
@@ -876,6 +911,10 @@ impl Inner {
                 if st.shutdown {
                     return Err(CoreError::Shutdown);
                 }
+                // Don't let unknown devices stack up prompts.
+                if !ch.initiator && st.pairings.len() >= MAX_PENDING_PAIRINGS {
+                    return Err(CoreError::PairingDisabled);
+                }
                 st.pairings.insert(id, tx);
             }
             self.emit(NodeEvent::PairingRequested {
@@ -894,7 +933,11 @@ impl Inner {
                     st.pairings.remove(&id);
                 }
             }
-            confirmed.map_err(|_| CoreError::Timeout)??;
+            let confirmed = confirmed.map_err(|_| CoreError::Timeout).and_then(|r| r);
+            if confirmed.is_err() && !ch.initiator {
+                self.lock().pairing_cooldown = Some(Instant::now() + PAIRING_COOLDOWN);
+            }
+            confirmed?;
             Ok((peer, sas))
         }
         .await;
@@ -1008,7 +1051,12 @@ impl AcceptPolicy for Policy<'_> {
     }
 
     fn allow_pairing(&self) -> bool {
-        self.0.config.allow_pairing && !self.0.lock().shutdown
+        let st = self.0.lock();
+        self.0.config.allow_pairing
+            && !st.shutdown
+            && st
+                .pairing_cooldown
+                .is_none_or(|until| Instant::now() >= until)
     }
 
     fn pairing_psk(&self) -> Option<[u8; PSK_LEN]> {
@@ -1030,9 +1078,16 @@ async fn main_loop(inner: Arc<Inner>, mut rx: mpsc::Receiver<TransportEvent>) {
                 transport,
                 remote,
             } => {
+                let Ok(permit) = inner.inbound.clone().try_acquire_owned() else {
+                    debug!("too many connections in their handshake; dropping one");
+                    continue;
+                };
                 let node = inner.clone();
                 inner.spawn(async move {
-                    if let Err(e) = node.handle_incoming(stream, transport, remote).await {
+                    if let Err(e) = node
+                        .handle_incoming(stream, transport, remote, permit)
+                        .await
+                    {
                         debug!(error = %e, "inbound connection failed");
                     }
                 });

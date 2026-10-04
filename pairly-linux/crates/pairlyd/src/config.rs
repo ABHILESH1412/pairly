@@ -4,7 +4,7 @@
 //! name = "My Laptop"          # default: hostname
 //! device_type = "laptop"      # default: laptop if a battery exists, else desktop
 //! data_dir = "/path"          # default: $XDG_DATA_HOME/pairly
-//! bus_name = "dev.pairly.Daemon"
+//! bus_name = "io.github.abhilesh1412.Pairly.Daemon"
 //! tray = true                 # show a tray icon
 //!
 //! [lan]
@@ -15,11 +15,21 @@
 //! [clipboard]
 //! auto = true                 # send this PC's clipboard on every copy
 //!
+//! [input]
+//! backend = "auto"            # remote input: auto, wayland, portal or uinput
+//!
+//! [telephony]
+//! pause_media = true          # pause this PC's music while the phone rings or is in a call
+//!
+//! [power]
+//! from_phone = true           # paired phones may lock, power off or restart this PC
+//!
 //! [bluetooth]
 //! enabled = true              # reach bonded devices over Bluetooth when there is no network
 //!
 //! [relay]
 //! address = "pairly-relay://TOKEN@relay.example.com:47200/PIN"   # printed by pairly-relay
+//! padding = true              # hide exact message sizes from the relay (256-byte steps)
 //!
 //! [share]
 //! download_dir = "~/Downloads/Pairly"   # default: the XDG download folder
@@ -31,6 +41,7 @@
 //! show = true                 # show notifications from paired devices
 //! ignore_apps = ["Spotify"]   # app names never forwarded
 //! reply = "auto"              # "inline", "dialog" or "auto" (inline when the server allows)
+//! dismiss_on_phone = true     # closing a phone's notification here clears it on the phone
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -59,6 +70,30 @@ struct File {
     relay: RelayFile,
     #[serde(default)]
     bluetooth: BluetoothFile,
+    #[serde(default)]
+    telephony: TelephonyFile,
+    #[serde(default)]
+    input: InputFile,
+    #[serde(default)]
+    power: PowerFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PowerFile {
+    from_phone: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InputFile {
+    backend: Option<crate::input::BackendChoice>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TelephonyFile {
+    pause_media: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -71,6 +106,7 @@ struct BluetoothFile {
 #[serde(deny_unknown_fields)]
 struct RelayFile {
     address: Option<String>,
+    padding: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -95,6 +131,7 @@ struct NotificationsFile {
     #[serde(default)]
     ignore_apps: Vec<String>,
     reply: Option<crate::notifications::ReplyMode>,
+    dismiss_on_phone: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -122,7 +159,13 @@ pub struct Config {
     pub share: crate::share::Settings,
     /// The relay for reaching devices over the internet; paired phones learn it from us.
     pub relay: Option<String>,
+    /// Pad what we send over the relay to 256-byte steps.
+    pub relay_padding: bool,
     pub bluetooth: bool,
+    pub pause_media_for_calls: bool,
+    pub input_backend: crate::input::BackendChoice,
+    /// Paired devices may lock, power off or restart this PC.
+    pub power_from_phone: bool,
 }
 
 impl Config {
@@ -153,7 +196,11 @@ impl Config {
         }
         Ok(Self {
             relay,
+            relay_padding: file.relay.padding.unwrap_or(true),
             bluetooth: file.bluetooth.enabled.unwrap_or(true),
+            pause_media_for_calls: file.telephony.pause_media.unwrap_or(true),
+            input_backend: file.input.backend.unwrap_or_default(),
+            power_from_phone: file.power.from_phone.unwrap_or(true),
             name: file.name.unwrap_or_else(hostname),
             device_type,
             data_dir: file
@@ -184,6 +231,7 @@ impl Config {
                     .notifications
                     .reply
                     .unwrap_or(crate::notifications::ReplyMode::Auto),
+                dismiss_on_phone: file.notifications.dismiss_on_phone.unwrap_or(true),
             },
         })
     }

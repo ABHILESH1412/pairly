@@ -10,6 +10,7 @@ mod handshake;
 mod identity;
 mod keystore;
 pub mod sas;
+mod seal;
 
 pub use error::CryptoError;
 pub use handshake::{
@@ -17,3 +18,4 @@ pub use handshake::{
 };
 pub use identity::{DeviceId, IdentityKeypair, KEY_LEN, PublicKey};
 pub use keystore::{FileKeyStore, KeyStore, MemoryKeyStore, load_or_generate};
+pub use seal::FieldKey;

@@ -30,7 +30,7 @@ fn send(device: &str, notification: &str, text: &str) -> Result<(), String> {
 
 pub fn run(device: String, notification: String, title: String) {
     let app = adw::Application::builder()
-        .application_id("dev.pairly.Pairly.Reply")
+        .application_id("io.github.abhilesh1412.Pairly.Reply")
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(move |app| {

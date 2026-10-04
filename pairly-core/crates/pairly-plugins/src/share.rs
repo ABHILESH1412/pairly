@@ -196,7 +196,10 @@ pub fn is_web_url(text: &str) -> bool {
 pub fn safe_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
-    let cleaned = cleaned.trim().trim_start_matches('.').trim();
+    // No hidden files, however the dots and spaces are mixed (". .x").
+    let cleaned = cleaned
+        .trim_start_matches(|c: char| c == '.' || c.is_whitespace())
+        .trim_end();
     let mut out = String::new();
     for c in cleaned.chars() {
         if out.len() + c.len_utf8() > MAX_NAME_BYTES {
@@ -898,6 +901,7 @@ mod tests {
         assert_eq!(safe_file_name("C:\\Users\\x\\evil.exe"), "evil.exe");
         assert_eq!(safe_file_name("a\nb\u{7}.txt"), "ab.txt");
         assert_eq!(safe_file_name(".."), "file");
+        assert_eq!(safe_file_name(". .x"), "x");
         assert_eq!(safe_file_name(""), "file");
         assert!(safe_file_name(&"é".repeat(300)).len() <= MAX_NAME_BYTES);
     }

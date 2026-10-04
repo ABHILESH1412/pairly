@@ -20,6 +20,8 @@ object Notifications {
     const val CHANNEL_FINDMY = "findmy"
     /** Offers, received files, links and text. */
     const val CHANNEL_SHARED = "shared"
+    /** A paired PC's media player. */
+    const val CHANNEL_MEDIA = "media"
     /** Progress of file transfers. */
     const val CHANNEL_TRANSFERS = "transfers"
     private const val CHANNEL_SERVICE = "service"
@@ -42,6 +44,10 @@ object Notifications {
                     .build(),
                 NotificationChannelCompat.Builder(CHANNEL_SHARED, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName(context.getString(R.string.channel_shared))
+                    .build(),
+                NotificationChannelCompat.Builder(CHANNEL_MEDIA, NotificationManagerCompat.IMPORTANCE_LOW)
+                    .setName(context.getString(R.string.channel_media))
+                    .setShowBadge(false)
                     .build(),
                 NotificationChannelCompat.Builder(CHANNEL_TRANSFERS, NotificationManagerCompat.IMPORTANCE_LOW)
                     .setName(context.getString(R.string.channel_transfers))

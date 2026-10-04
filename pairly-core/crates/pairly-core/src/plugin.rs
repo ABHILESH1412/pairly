@@ -63,7 +63,7 @@ impl PluginCtx {
         if !self.peer_accepts(&packet.ty) {
             return Err(CoreError::Unsupported(packet.ty));
         }
-        Ok(self.session.send(packet))
+        self.session.send(packet)
     }
 }
 
