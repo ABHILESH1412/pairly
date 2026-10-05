@@ -1548,6 +1548,41 @@ See [section 14](#14-packaging-and-release).
 
 ---
 
+### Parked: reaching the phone away from home without a VPS (designed 2026-10-06)
+
+The user can't pay for a VPS, and doesn't want a separate network app (Tailscale) or polling.
+The design agreed on, not built:
+- **PC → phone:**
+  - the PC makes one HTTPS request to a Supabase Edge Function, which holds the Firebase
+    service-account key;
+  - the function sends through **Firebase Cloud Messaging**, so the phone wakes instantly over
+    Play Services' existing connection, with no connection of Pairly's own;
+  - the phone tells the PC its FCM token over the encrypted link while they're at home.
+- **Phone → PC:** the phone makes one HTTPS request to Supabase, and the PC receives it over
+  one idle connection (FCM doesn't exist for Linux). This was still to be confirmed with the
+  user: the alternative is polling, which they rejected.
+- **Privacy:**
+  - messages are sealed end to end with keys derived from the pairing's `pair_secret`;
+  - mailbox names are derived the same way;
+  - Supabase and Google see only ciphertext (padded), tokens, timing and IPs;
+  - no forward secrecy (no live handshake), but messages are deleted on delivery.
+- **Scope:** notifications, clipboard, lock and power, find my phone, ping, battery, calls,
+  texts and commands; no files, browsing, media or input.
+- **Used only** when Wi-Fi, Bluetooth and the relay are all unavailable.
+- **Costs:**
+  - a Google dependency (no FCM on phones without Play Services, and F-Droid would need an
+    FCM-free build);
+  - the user's own Firebase and Supabase projects, built into the APK and shared by everyone
+    using the release;
+  - FCM's 4 KB message limit;
+  - Supabase free projects pause after a week unused.
+- **Rejected:**
+  - ntfy.sh: 250 messages a day per IP, shared over mobile CGNAT;
+  - polling: the user didn't want it;
+  - Realtime WebSockets on the phone: the user doesn't want the phone holding a connection.
+
+---
+
 ## 13. Testing strategy
 
 | Level | What | How |
