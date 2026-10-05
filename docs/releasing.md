@@ -2,10 +2,12 @@
 
 Each release ships:
 - **a signed Android APK**, on GitHub Releases;
-- **an AUR package**, for Arch and EndeavourOS, built from the release's source tarball;
+- **an Arch package recipe** (PKGBUILD), attached to the release, which builds from the
+  release's source tarball;
 - optionally, **a relay Docker image** on GitHub's container registry.
 
-Steps 1 and 2 are done once. Steps 3 to 6 are done for every release.
+Steps 1 and 2 are done once. Steps 3 to 6 are done for every release. In this guide,
+`X.Y.Z` stands for the version number, such as `0.1.0`: always type the real number.
 
 ## 1. Put the code on GitHub (once)
 
@@ -62,11 +64,15 @@ For 0.1.0 all of these are already set.
 
 ## 4. Commit, tag and push
 
+Use the real version number. For the first release:
+
 ```sh
-git commit -am "Release vX.Y.Z"
-git tag vX.Y.Z
-git push && git push origin vX.Y.Z
+git commit -am "Release v0.1.0"
+git tag v0.1.0
+git push && git push origin v0.1.0
 ```
+
+(For a later release, replace `0.1.0` with its number, e.g. `0.1.1`.)
 
 ## 5. Build the release files
 
@@ -87,26 +93,14 @@ The script:
 2. Upload `dist/vX.Y.Z/pairly-X.Y.Z.apk` and its `.sha256`.
 3. Write what changed, then publish.
 
-**AUR**
-- The first time:
-  1. Create an account at <https://aur.archlinux.org/>.
-  2. Add your SSH public key (`~/.ssh/id_ed25519.pub`) under *My Account*.
-  3. Clone the package:
-
-     ```sh
-     git clone ssh://aur@aur.archlinux.org/pairly.git ~/aur-pairly
-     ```
-
-- Every release:
-
-  ```sh
-  cp dist/vX.Y.Z/aur/{PKGBUILD,.SRCINFO,pairly.install} ~/aur-pairly/
-  cd ~/aur-pairly && git add PKGBUILD .SRCINFO pairly.install
-  git commit -m "Update to X.Y.Z" && git push
-  ```
-
-- Anyone can then install it with `yay -S pairly` (or `paru -S pairly`), then run
-  `systemctl --user enable --now pairlyd`.
+**Arch package (attached to the release; the AUR isn't open to new accounts yet)**
+- On the release, upload `dist/vX.Y.Z/aur/PKGBUILD` and `dist/vX.Y.Z/aur/pairly.install` too.
+  Arch users download both and run `makepkg -si` (the README explains it).
+- If AUR registration opens later:
+  1. Create an account and add your SSH key there.
+  2. `git clone ssh://aur@aur.archlinux.org/pairly.git`.
+  3. Copy in `PKGBUILD`, `.SRCINFO` and `pairly.install`.
+  4. Commit and push.
 
 **Relay image (optional)**
 

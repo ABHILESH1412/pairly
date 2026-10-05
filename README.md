@@ -29,17 +29,22 @@ It always uses the best link available and switches without dropping anything.
 
 **Linux (Arch, EndeavourOS, Manjaro)**
 
+Download `PKGBUILD` and `pairly.install` from the latest
+[release](https://github.com/ABHILESH1412/pairly/releases) into an empty folder. Then, in that
+folder:
+
 ```sh
-yay -S pairly
+makepkg -si
 systemctl --user enable --now pairlyd
 ```
 
-Then open **Pairly** from the app menu.
+Then open **Pairly** from the app menu. The build takes a few minutes and about 4 GB of RAM.
 
-On other distributions, build from source (below). Pairly needs GTK 4 and libadwaita. On
-Wayland, remote input works directly on wlroots compositors (Hyprland, Sway). GNOME and KDE go
-through the RemoteDesktop portal, which isn't tested yet. The `uinput` fallback works anywhere the
-user can write to `/dev/uinput` (recent systemd grants that to the logged-in user).
+**Other distributions:** build from source (below). Pairly needs GTK 4 and libadwaita.
+
+**Remote input:** on Wayland it works directly on wlroots compositors (Hyprland, Sway). GNOME
+and KDE go through the RemoteDesktop portal, which isn't tested yet. The `uinput` fallback works
+anywhere the user can write to `/dev/uinput` (recent systemd grants that to the logged-in user).
 
 **Android 8 or newer:** download `pairly-X.Y.Z.apk` from
 [Releases](https://github.com/ABHILESH1412/pairly/releases) and install it.
