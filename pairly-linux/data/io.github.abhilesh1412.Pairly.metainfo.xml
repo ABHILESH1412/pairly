@@ -46,6 +46,15 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.2" date="2026-10-07">
+      <description>
+        <ul>
+          <li>[feat] added the screen share feature between phone and pc</li>
+          <li>[feat] added the laser pointer [fix] the up/down/left/right buttons were not visible in the androids keybaord/mouse section they are veisilble now [fix] the double click and drag feature to select text was not implemented, it is not</li>
+          <li>Free all build memory when a release finishes</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-06">
       <description>
         <ul>

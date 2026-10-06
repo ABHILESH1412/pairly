@@ -1,6 +1,6 @@
 # Maintainer: Abhilesh Singh <sabhilesh260@gmail.com>
 pkgname=pairly
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc='Connect your Android phone and Linux PC: notifications, texts, calls, files, clipboard, media and remote input'
 arch=('x86_64' 'aarch64')
