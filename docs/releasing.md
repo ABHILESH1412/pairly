@@ -1,13 +1,13 @@
 # Releasing Pairly
 
-Each release ships:
-- **a signed Android APK**, on GitHub Releases;
-- **an Arch package recipe** (PKGBUILD), attached to the release, which builds from the
+Each release ships, on GitHub Releases:
+- **a signed Android APK**;
+- **a prebuilt Linux bundle** (x86_64): unpack it and run `make install activate`;
+- **the Arch package recipe** (`PKGBUILD` and `pairly.install`), which builds from the
   release's source tarball;
-- optionally, **a relay Docker image** on GitHub's container registry.
+- `SHA256SUMS` for the downloads.
 
-Steps 1 and 2 are done once. Steps 3 to 6 are done for every release. In this guide,
-`X.Y.Z` stands for the version number, such as `0.1.0`: always type the real number.
+Steps 1 to 3 are done once. After that, every release is step 4: one command.
 
 ## 1. Put the code on GitHub (once)
 
@@ -49,58 +49,64 @@ uninstall it and pair again.
 3. **Back up** `~/pairly-release.jks` somewhere off this laptop, such as an encrypted USB stick
    or your password manager's file storage.
 
-## 3. Set the version
+## 3. Install and log in to the GitHub CLI (once)
 
-The version must match everywhere; `scripts/release.sh` checks it.
-
-| Where | What |
-|---|---|
-| `pairly-core/Cargo.toml` and `pairly-linux/Cargo.toml` | `version = "X.Y.Z"` (`[workspace.package]`) |
-| `pairly-android/app/build.gradle.kts` | `versionName = "X.Y.Z"`, and **increase `versionCode` by 1** |
-| `pairly-linux/packaging/arch/PKGBUILD` | `pkgver=X.Y.Z`, `pkgrel=1` |
-| `pairly-linux/data/io.github.abhilesh1412.Pairly.metainfo.xml` | a new `<release version="X.Y.Z" date="…">` at the top |
-
-For 0.1.0 all of these are already set.
-
-## 4. Commit, tag and push
-
-Use the real version number. For the first release:
+The release script publishes through GitHub's official command-line tool:
 
 ```sh
-git commit -am "Release v0.1.0"
-git tag v0.1.0
-git push && git push origin v0.1.0
+sudo pacman -S github-cli
+gh auth login
 ```
 
-(For a later release, replace `0.1.0` with its number, e.g. `0.1.1`.)
+In `gh auth login`, choose **GitHub.com**, then **SSH** (it finds the key you already added),
+then **Login with a web browser**, and enter the code it shows.
 
-## 5. Build the release files
+## 4. Release (every time)
+
+Commit your work as usual (`git add`, `git commit`), then run **one command** from the
+`pairly` folder:
 
 ```sh
-scripts/release.sh
+scripts/release.sh            # next patch version, e.g. 0.1.0 -> 0.1.1
+scripts/release.sh minor      # new features: 0.1.4 -> 0.2.0
+scripts/release.sh major      # big changes: 0.9.2 -> 1.0.0
 ```
 
-The script:
-1. checks the versions, a clean tree, the tag and the release key;
-2. builds the APK and refuses one signed with the debug key;
-3. downloads GitHub's tarball for the tag to put its checksum in the PKGBUILD;
-4. writes everything to `dist/vX.Y.Z/`.
+It asks for the release key's password, then works through these steps by itself (about
+10 to 20 minutes):
 
-## 6. Publish
+1. **Checks** that your work is committed, you're on `main` and up to date with GitHub, the
+   release key is set up and `gh` is logged in.
+2. **Bumps the version** everywhere:
+   - both Rust workspaces and their lock files;
+   - the Android `versionName`, and `versionCode` + 1;
+   - the PKGBUILD;
+   - the software-centre metadata, with release notes made from your commit messages.
+3. **Runs the tests**, then **builds** the signed APK and the Linux bundle (memory-capped).
+4. **Commits** "Release vX.Y.Z", **tags** it, and **pushes** both.
+5. **Publishes the GitHub release** "Pairly X.Y.Z": what's new (your commit messages since
+   the last release), install steps and checksums, with every file attached.
 
-**GitHub Release**
-1. On the repository, open **Releases → Draft a new release** and choose the tag `vX.Y.Z`.
-2. Upload `dist/vX.Y.Z/pairly-X.Y.Z.apk` and its `.sha256`.
-3. Write what changed, then publish.
+If anything fails before the push, the version bump is undone and nothing leaves your PC.
+Fix the problem and run it again.
 
-**Arch package (attached to the release; the AUR isn't open to new accounts yet)**
-- On the release, upload `dist/vX.Y.Z/aur/PKGBUILD` and `dist/vX.Y.Z/aur/pairly.install` too.
-  Arch users download both and run `makepkg -si` (the README explains it).
-- If AUR registration opens later:
-  1. Create an account and add your SSH key there.
-  2. `git clone ssh://aur@aur.archlinux.org/pairly.git`.
-  3. Copy in `PKGBUILD`, `.SRCINFO` and `pairly.install`.
-  4. Commit and push.
+Useful options:
+- `scripts/release.sh --dry-run`: shows what the version bump would change, then puts
+  everything back. Nothing is built or pushed.
+- `scripts/release.sh --no-test`: skips the test run (faster; use it when you've just run
+  the tests yourself).
+- `scripts/release.sh 0.3.0`: releases an exact version.
+
+**Tip:** the release notes are your commit messages, so write them for people reading the
+release page, e.g. "Choose which PC apps send notifications to the phone".
+
+## Optional extras
+
+**AUR** (not open to new accounts at the moment). If you get an account later:
+1. Add your SSH key there.
+2. `git clone ssh://aur@aur.archlinux.org/pairly.git`.
+3. Copy in `PKGBUILD`, `.SRCINFO` and `pairly.install` from `dist/vX.Y.Z/arch/`.
+4. Commit and push.
 
 **Relay image (optional)**
 
@@ -114,7 +120,7 @@ docker build -f crates/pairly-relay/deploy/Dockerfile -t ghcr.io/abhilesh1412/pa
 docker push ghcr.io/abhilesh1412/pairly-relay:X.Y.Z
 ```
 
-## Checks before tagging
+## Checks you can run yourself
 
 Run each command from its own folder:
 

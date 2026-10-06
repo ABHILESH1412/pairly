@@ -5,6 +5,9 @@
 #
 # For packages (files only, nothing started):
 #   make build && make install DESTDIR="$pkgdir" PREFIX=/usr UNITDIR=/usr/lib/systemd/user
+#
+# From a release's prebuilt bundle (no compiler needed):
+#   make install activate
 
 PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
@@ -25,7 +28,7 @@ NEMO_ACTION     := $(DATADIR)/nemo/actions/pairly-send.nemo_action
 APP_ID   := io.github.abhilesh1412.Pairly
 BINARIES := pairlyd pairly pairly-gtk
 
-.PHONY: build install install-user uninstall-user
+.PHONY: build install activate install-user uninstall-user
 
 build:
 	cargo build --release --locked -j $(JOBS)
@@ -47,7 +50,10 @@ endif
 	install -Dm755 $(FM)/pairly-send.dolphin.desktop $(DESTDIR)$(DOLPHIN_MENU)
 	install -Dm644 $(FM)/pairly-send.nemo_action $(DESTDIR)$(NEMO_ACTION)
 
-install-user: build install
+install-user: build install activate
+
+# Refresh caches and (re)start the user service after installing under ~/.local.
+activate:
 	-gtk-update-icon-cache -qtf $(DATADIR)/icons/hicolor
 	-update-desktop-database -q $(DATADIR)/applications
 	-busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig
