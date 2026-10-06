@@ -1,6 +1,6 @@
 # Maintainer: Abhilesh Singh <sabhilesh260@gmail.com>
 pkgname=pairly
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Connect your Android phone and Linux PC: notifications, texts, calls, files, clipboard, media and remote input'
 arch=('x86_64' 'aarch64')
@@ -15,7 +15,7 @@ optdepends=(
 )
 install=pairly.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP') # replaced by `updpkgsums` once the release tag exists
+sha256sums=('SKIP')
 
 prepare() {
   cd "$pkgname-$pkgver/pairly-linux"

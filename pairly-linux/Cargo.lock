@@ -1667,7 +1667,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "ciborium",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake2 0.11.0",
  "chacha20poly1305",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-dbus"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "zbus",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-gtk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "pairly-dbus",
@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-plugins"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "pairly-core",
@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ciborium",
  "serde",
@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-transport-bt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bluer",
@@ -1769,7 +1769,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-transport-lan"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "if-addrs",
@@ -1784,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-transport-relay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "data-encoding",
@@ -1799,7 +1799,7 @@ dependencies = [
 
 [[package]]
 name = "pairlyd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
