@@ -1116,12 +1116,13 @@ async fn peer_loop(
                     session: session.clone(),
                     platform: inner.platform.clone(),
                 };
-                inner.emit(NodeEvent::Connected { id, transport });
-                inner.update_transport_peers();
+                // Plugins first, so anyone reacting to `Connected` can use them right away.
                 for p in &inner.plugins {
                     p.on_connected(&c).await;
                 }
                 ctx = Some(c);
+                inner.emit(NodeEvent::Connected { id, transport });
+                inner.update_transport_peers();
             }
             SessionEvent::Packet(env) => {
                 let Some(c) = &ctx else { continue };
