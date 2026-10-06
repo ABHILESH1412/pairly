@@ -92,8 +92,22 @@ fi
 # From here until the push, any failure (or Ctrl+C) puts every file back as it was.
 pushed=0
 start="$(git rev-parse HEAD)"
+# Build helpers (Gradle and Kotlin daemons, also ones left by earlier builds) hold gigabytes:
+# stop them whenever the script ends, so the memory is free straight away.
+free_memory() {
+  (cd "$root/pairly-android" && ./gradlew --stop --quiet >/dev/null 2>&1) || true
+  # Only Java processes whose command line names the Kotlin daemon class.
+  local pid
+  for pid in $(pgrep -u "$USER" -x java); do
+    if grep -qa 'org.jetbrains.kotlin.daemon.KotlinCompileDaemon' "/proc/$pid/cmdline" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
 undo() {
   local status=$?
+  free_memory
   if [ "$pushed" = 0 ]; then
     if [ "$dry_run" = 1 ]; then
       echo "Dry run: every file is back as it was." >&2
@@ -158,7 +172,10 @@ out="dist/$tag"
 rm -rf "$out" && mkdir -p "$out"
 
 step "Building the Android app"
-(cd pairly-android && capped ./gradlew --quiet clean assembleRelease)
+# No daemons: the Gradle and Kotlin compiler processes exit with the build instead of keeping
+# gigabytes of RAM for hours.
+(cd pairly-android && capped ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
+  --quiet clean assembleRelease)
 apk="pairly-$version.apk"
 cp pairly-android/app/build/outputs/apk/release/app-release.apk "$out/$apk"
 apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)"
