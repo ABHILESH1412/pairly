@@ -24,6 +24,9 @@
 //! [power]
 //! from_phone = true           # paired phones may lock, power off or restart this PC
 //!
+//! [screen]
+//! share_with_phones = true    # paired phones may view and control this screen (same Wi-Fi)
+//!
 //! [bluetooth]
 //! enabled = true              # reach bonded devices over Bluetooth when there is no network
 //!
@@ -76,12 +79,20 @@ struct File {
     input: InputFile,
     #[serde(default)]
     power: PowerFile,
+    #[serde(default)]
+    screen: ScreenFile,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PowerFile {
     from_phone: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScreenFile {
+    share_with_phones: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -166,6 +177,8 @@ pub struct Config {
     pub input_backend: crate::input::BackendChoice,
     /// Paired devices may lock, power off or restart this PC.
     pub power_from_phone: bool,
+    /// Paired phones may view and control this PC's screen (same Wi-Fi only).
+    pub screen_share: bool,
 }
 
 impl Config {
@@ -201,6 +214,7 @@ impl Config {
             pause_media_for_calls: file.telephony.pause_media.unwrap_or(true),
             input_backend: file.input.backend.unwrap_or_default(),
             power_from_phone: file.power.from_phone.unwrap_or(true),
+            screen_share: file.screen.share_with_phones.unwrap_or(true),
             name: file.name.unwrap_or_else(hostname),
             device_type,
             data_dir: file

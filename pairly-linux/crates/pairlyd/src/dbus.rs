@@ -428,6 +428,21 @@ impl DaemonIface {
             .map_err(failed)
     }
 
+    /// Open a window showing the phone's screen (it asks its user first).
+    async fn show_phone_screen(&self, id: &str) -> fdo::Result<()> {
+        let peer = parse_id(id)?;
+        let name = self
+            .node
+            .devices()
+            .ok()
+            .and_then(|list| list.into_iter().find(|d| d.id == peer))
+            .map_or_else(|| "Phone".to_owned(), |d| d.name);
+        self.features
+            .screen_host
+            .open(peer, &name)
+            .map_err(fdo::Error::Failed)
+    }
+
     async fn phone_power(&self, id: &str, action: &str) -> fdo::Result<()> {
         use pairly_plugins::power::PowerAction;
         let action = match action {

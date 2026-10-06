@@ -15,8 +15,8 @@ use pairly_plugins::input::{
     ButtonAction, KeyInput, Modifiers, MouseButton, PointerButton, PointerMotion, SpecialKey,
 };
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_registry, wl_seat};
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
     zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
@@ -26,7 +26,26 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
 };
 
-struct State;
+/// Where each monitor sits in the desktop (from `wl_output.geometry`).
+#[derive(Default)]
+struct State {
+    positions: HashMap<u32, (i32, i32)>,
+}
+
+impl Dispatch<wl_output::WlOutput, ()> for State {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Geometry { x, y, .. } = event {
+            state.positions.insert(output.id().protocol_id(), (x, y));
+        }
+    }
+}
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(
@@ -62,6 +81,14 @@ pub struct Devices {
     keyboard: ZwpVirtualKeyboardV1,
     keymap: Keymap,
     start: Instant,
+    /// For pointers tied to one monitor (placing the pointer at a spot on it).
+    seat: wl_seat::WlSeat,
+    pointers: ZwlrVirtualPointerManagerV1,
+    qh: QueueHandle<State>,
+    /// Each monitor and where it is in the desktop.
+    outputs: Vec<(wl_output::WlOutput, (i32, i32))>,
+    /// Pointers tied to a monitor, by its position.
+    placed: HashMap<(i32, i32), ZwlrVirtualPointerV1>,
 }
 
 pub fn open() -> Result<Devices, String> {
@@ -80,17 +107,41 @@ pub fn open() -> Result<Devices, String> {
         .map_err(|_| "the compositor doesn't offer virtual keyboards")?;
     let pointer = pointers.create_virtual_pointer(Some(&seat), &qh, ());
     let keyboard = keyboards.create_virtual_keyboard(&seat, &qh, ());
+    // Every monitor, to find the one being shared.
+    let outputs: Vec<wl_output::WlOutput> = globals.contents().with_list(|list| {
+        list.iter()
+            .filter(|g| g.interface == wl_output::WlOutput::interface().name)
+            .map(|g| globals.registry().bind(g.name, g.version.min(4), &qh, ()))
+            .collect()
+    });
+    let mut state = State::default();
     let mut devices = Devices {
         conn,
         pointer,
         keyboard,
         keymap: Keymap::default(),
         start: Instant::now(),
+        seat,
+        pointers,
+        qh: qh.clone(),
+        outputs: Vec::new(),
+        placed: HashMap::new(),
     };
     devices.upload_keymap()?;
     queue
-        .roundtrip(&mut State)
+        .roundtrip(&mut state)
         .map_err(|e| format!("Wayland: {e}"))?;
+    devices.outputs = outputs
+        .into_iter()
+        .map(|o| {
+            let at = state
+                .positions
+                .get(&o.id().protocol_id())
+                .copied()
+                .unwrap_or((0, 0));
+            (o, at)
+        })
+        .collect();
     Ok(devices)
 }
 
@@ -261,6 +312,40 @@ impl super::Backend for Devices {
 
     fn key(&mut self, k: &KeyInput) -> Result<(), String> {
         self.key_inner(k)?;
+        self.conn.flush().map_err(|e| e.to_string())
+    }
+
+    fn place(&mut self, monitor: (i32, i32), fx: f32, fy: f32) -> Result<(), String> {
+        if self.pointers.version() < 2 {
+            return Err("the compositor can't place the pointer on a monitor".into());
+        }
+        // The monitor at that position (or the only/first one).
+        let output = self
+            .outputs
+            .iter()
+            .find(|(_, at)| *at == monitor)
+            .or_else(|| self.outputs.first())
+            .map(|(o, _)| o.clone())
+            .ok_or("no monitor")?;
+        let pointer = self.placed.entry(monitor).or_insert_with(|| {
+            self.pointers.create_virtual_pointer_with_output(
+                Some(&self.seat),
+                Some(&output),
+                &self.qh,
+                (),
+            )
+        });
+        // Positions are fractions of that monitor; the compositor scales them.
+        let scale = |f: f32| (f.clamp(0.0, 1.0) * f32::from(u16::MAX)) as u32;
+        let t = u32::try_from(self.start.elapsed().as_millis() % u128::from(u32::MAX)).unwrap_or(0);
+        pointer.motion_absolute(
+            t,
+            scale(fx),
+            scale(fy),
+            u32::from(u16::MAX),
+            u32::from(u16::MAX),
+        );
+        pointer.frame();
         self.conn.flush().map_err(|e| e.to_string())
     }
 }

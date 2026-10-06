@@ -69,6 +69,8 @@ pub enum Input {
     OpenContacts(String),
     /// Browse a phone's files.
     OpenFiles(String),
+    /// Watch and control a phone's screen.
+    ShowScreen(String),
     /// Lock a phone, or power it off / restart it: (device, "lock" | "poweroff" | "restart").
     Power(String, &'static str),
     /// Ask whether to power off or restart a phone.
@@ -619,6 +621,14 @@ impl Component for App {
                 }
                 return;
             }
+            Input::ShowScreen(id) => {
+                let name = self.name_of(&id);
+                self.call(
+                    &sender,
+                    move |d| async move { d.show_phone_screen(&id).await },
+                );
+                Self::toast(widgets, &format!("Asking {name} to share its screen…"));
+            }
             Input::OpenFiles(id) => {
                 if let Some(daemon) = self.daemon.clone() {
                     let name = self.name_of(&id);
@@ -1143,6 +1153,14 @@ fn device_page(
             with(Input::Ping),
         ));
         if d.device_type == "phone" {
+            add(tile(
+                "phone-symbolic",
+                "Phone Screen",
+                "See and control it (same Wi-Fi)",
+                on,
+                sender,
+                with(Input::ShowScreen),
+            ));
             add(tile(
                 "folder-symbolic",
                 "Browse Files",

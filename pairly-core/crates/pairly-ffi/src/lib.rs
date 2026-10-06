@@ -41,7 +41,7 @@ pub use phone::{
     AttachmentData, ButtonActionData, CallActionData, CallStateData, CommandData, CommandHandler,
     ContactData, ContactsHandler, ConversationData, FilesHandler, KeyData, LaserActionData,
     MessageData, ModifiersData, MouseButtonData, OutgoingAttachmentData, PowerActionData,
-    PowerHandler, SmsHandler, TelephonyHandler,
+    PowerHandler, ScreenInputData, SmsHandler, TelephonyHandler,
 };
 
 uniffi::setup_scaffolding!();
@@ -630,6 +630,7 @@ pub struct Node {
     commands: Arc<pairly_plugins::command::CommandPlugin>,
     input: Arc<pairly_plugins::input::InputPlugin>,
     power: Arc<pairly_plugins::power::PowerPlugin>,
+    screen: Arc<pairly_plugins::screen::ScreenPlugin>,
     forward: AbortHandle,
 }
 
@@ -655,6 +656,7 @@ struct Parts {
     contacts: Option<Arc<dyn ContactsHandler>>,
     files: Option<Arc<dyn FilesHandler>>,
     power: Option<Arc<dyn PowerHandler>>,
+    screen: Option<Arc<dyn phone::ScreenHandler>>,
 }
 
 fn missing(what: &str) -> PairlyError {
@@ -685,6 +687,7 @@ impl NodeSetup {
                 contacts: None,
                 files: None,
                 power: None,
+                screen: None,
             }),
         })
     }
@@ -729,6 +732,10 @@ impl NodeSetup {
         self.lock().files = Some(handler);
     }
 
+    pub fn screen(&self, handler: Arc<dyn phone::ScreenHandler>) {
+        self.lock().screen = Some(handler);
+    }
+
     pub fn power(&self, handler: Arc<dyn PowerHandler>) {
         self.lock().power = Some(handler);
     }
@@ -753,6 +760,7 @@ impl NodeSetup {
                 contacts: p.contacts.clone(),
                 files: p.files.clone(),
                 power: p.power.clone(),
+                screen: p.screen.clone(),
             }
         };
         let task = runtime().spawn(start(parts));
@@ -787,6 +795,9 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
     let calls = parts.telephony.ok_or_else(|| missing("telephony"))?;
     let contacts = parts.contacts.ok_or_else(|| missing("contacts"))?;
     let files = parts.files.ok_or_else(|| missing("files"))?;
+    let screen = pairly_plugins::screen::ScreenPlugin::new(Arc::new(phone::ForeignScreen(
+        parts.screen.ok_or_else(|| missing("screen"))?,
+    )));
     let power = pairly_plugins::power::PowerPlugin::new(Arc::new(phone::ForeignPower(
         parts.power.ok_or_else(|| missing("power"))?,
     )));
@@ -841,6 +852,7 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
             phone::ForeignFiles(files),
         )))
         .plugin(power.clone())
+        .plugin(screen.clone())
         .start()
         .await?;
     let mut events = node.subscribe();
@@ -867,6 +879,7 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
         commands,
         input,
         power,
+        screen,
         forward: forward.abort_handle(),
     })
 }
@@ -1122,6 +1135,50 @@ impl Node {
 
     /// The laser pointer on a PC's screen: show it, move it by a fraction of the screen
     /// (`dx`, `dy`, from the gyroscope), hide it.
+    /// Ask a PC to show its screen here (`start`), or stop. Same Wi-Fi only.
+    pub fn screen_request(&self, device: String, start: bool) -> Result<(), PairlyError> {
+        use pairly_plugins::screen::ScreenAction;
+        let action = if start {
+            ScreenAction::Start
+        } else {
+            ScreenAction::Stop
+        };
+        Ok(self.screen.request(parse_id(&device)?, action)?)
+    }
+
+    /// Control the PC's screen being watched: taps, drags, scrolling, keys, text.
+    pub fn screen_input(&self, device: String, input: ScreenInputData) -> Result<(), PairlyError> {
+        Ok(self.screen.input(parse_id(&device)?, input.into())?)
+    }
+
+    /// This phone's screen recording started (`width` × `height` pixels): tell the PC.
+    pub fn screen_started(
+        &self,
+        device: String,
+        width: u32,
+        height: u32,
+    ) -> Result<(), PairlyError> {
+        Ok(self.screen.started(parse_id(&device)?, width, height)?)
+    }
+
+    /// One encoded H.264 access unit for the PC (`key`: a key frame; `config`: SPS/PPS).
+    /// Returns `true` when the encoder should make a key frame now (the link fell behind).
+    pub fn screen_frame(
+        &self,
+        device: String,
+        data: Vec<u8>,
+        key: bool,
+        config: bool,
+    ) -> Result<bool, PairlyError> {
+        let frame = pairly_plugins::screen::ScreenFrame { data, key, config };
+        Ok(self.screen.frame(parse_id(&device)?, &frame)?)
+    }
+
+    /// Sharing ended on this phone (or never started), and why.
+    pub fn screen_stopped(&self, device: String, reason: String) -> Result<(), PairlyError> {
+        Ok(self.screen.stopped(parse_id(&device)?, &reason)?)
+    }
+
     pub fn input_laser(
         &self,
         device: String,

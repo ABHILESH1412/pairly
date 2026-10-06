@@ -49,6 +49,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import dev.pairly.android.screen.PcScreenActivity
+import androidx.compose.material.icons.outlined.ScreenShare
 import dev.pairly.android.device.LaserPointer
 import androidx.compose.material.icons.outlined.Adjust
 import androidx.compose.runtime.DisposableEffect
@@ -213,6 +215,13 @@ fun DeviceScreen(
                 add(Tile(Icons.Outlined.Mouse, stringResource(R.string.action_remote), on, actions.remote))
                 add(Tile(Icons.Outlined.Slideshow, stringResource(R.string.action_presenter), on, actions.presenter))
                 actions.commands?.let { add(Tile(Icons.Outlined.Terminal, stringResource(R.string.action_commands), on, it)) }
+                if (isPc) {
+                    add(
+                        Tile(Icons.Outlined.ScreenShare, stringResource(R.string.action_pc_screen), on) {
+                            PcScreenActivity.open(context, device.id, device.name)
+                        },
+                    )
+                }
                 if (isPc && laser.available) {
                     add(
                         Tile(

@@ -34,7 +34,10 @@ const MAX_UNACKED: usize = 4096;
 pub enum Priority {
     Control = 0,
     Interactive = 1,
-    Bulk = 2,
+    /// Live video: after input (so touches don't wait behind frames), before file transfers.
+    /// Its sender watches [`Session::queued`] and skips frames rather than letting them pile up.
+    Video = 2,
+    Bulk = 3,
 }
 
 /// A packet for the session to number and send.
@@ -159,7 +162,7 @@ struct Link {
 struct State {
     next_id: u64,
     unacked: BTreeMap<u64, (Envelope, Priority)>,
-    queues: [VecDeque<Envelope>; 3],
+    queues: [VecDeque<Envelope>; 4],
     pending_acks: Vec<u64>,
     ack_deadline: Option<Instant>,
     dedup: DedupWindow,
@@ -381,6 +384,17 @@ impl Session {
             self.shared.wake.notify_one();
         }
         Ok(Some(id))
+    }
+
+    /// How many packets of `priority` are waiting to be written.
+    pub fn queued(&self, priority: Priority) -> usize {
+        self.shared.lock().queues[priority as usize].len()
+    }
+
+    /// Forget the unreliable packets of `priority` still waiting (a live stream skipping
+    /// ahead). Reliable ones stay.
+    pub fn drop_unreliable(&self, priority: Priority) {
+        self.shared.lock().queues[priority as usize].retain(|env| env.ack);
     }
 
     pub fn is_connected(&self) -> bool {

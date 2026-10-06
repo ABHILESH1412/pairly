@@ -499,3 +499,164 @@ impl InputHost for NoInput {
     fn button(&self, _: &PeerInfo, _: PointerButton) {}
     fn key(&self, _: &PeerInfo, _: &KeyInput) {}
 }
+
+// ----- screen sharing --------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct PointData {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ScreenKeyData {
+    Back,
+    Home,
+    Recents,
+    Enter,
+    Backspace,
+}
+
+/// Control of a shared screen; positions are fractions (0–1) of the screen.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum ScreenInputData {
+    Tap {
+        x: f32,
+        y: f32,
+    },
+    LongPress {
+        x: f32,
+        y: f32,
+    },
+    Swipe {
+        points: Vec<PointData>,
+        duration_ms: u32,
+    },
+    Key {
+        key: ScreenKeyData,
+    },
+    Text {
+        text: String,
+    },
+    Scroll {
+        dx: f32,
+        dy: f32,
+    },
+}
+
+impl From<pairly_plugins::screen::ScreenInput> for ScreenInputData {
+    fn from(input: pairly_plugins::screen::ScreenInput) -> Self {
+        use pairly_plugins::screen::{ScreenInput, ScreenKey};
+        match input {
+            ScreenInput::Tap { x, y } => Self::Tap { x, y },
+            ScreenInput::LongPress { x, y } => Self::LongPress { x, y },
+            ScreenInput::Swipe {
+                points,
+                duration_ms,
+            } => Self::Swipe {
+                points: points
+                    .into_iter()
+                    .map(|(x, y)| PointData { x, y })
+                    .collect(),
+                duration_ms,
+            },
+            ScreenInput::Key { key } => Self::Key {
+                key: match key {
+                    ScreenKey::Back => ScreenKeyData::Back,
+                    ScreenKey::Home => ScreenKeyData::Home,
+                    ScreenKey::Recents => ScreenKeyData::Recents,
+                    ScreenKey::Enter => ScreenKeyData::Enter,
+                    ScreenKey::Backspace => ScreenKeyData::Backspace,
+                },
+            },
+            ScreenInput::Text { text } => Self::Text { text },
+            ScreenInput::Scroll { dx, dy } => Self::Scroll { dx, dy },
+        }
+    }
+}
+
+/// Implemented in Kotlin: share this phone's screen with a PC that asks (after the user
+/// agrees), stop, and act on the PC's taps and keys.
+#[uniffi::export(with_foreign)]
+pub trait ScreenHandler: Send + Sync {
+    /// A PC asks to see the screen. Ask the user; once recording, call `Node::screen_started`.
+    fn start_sharing(&self, device_id: String, device_name: String) -> Result<(), PairlyError>;
+    fn stop_sharing(&self, device_id: String);
+    fn input(&self, device_id: String, input: ScreenInputData);
+    /// The PC went away mid-stream.
+    fn disconnected(&self, device_id: String);
+
+    // Watching a PC's screen (after `Node::screen_request`).
+    /// The PC's stream starts (`width` × `height`).
+    fn viewer_started(&self, device_id: String, width: u32, height: u32);
+    /// One H.264 access unit from the PC (`key`: decoding can start here).
+    fn viewer_frame(&self, device_id: String, data: Vec<u8>, key: bool);
+    /// The PC's stream ended (or was refused), and why.
+    fn viewer_stopped(&self, device_id: String, reason: String);
+}
+
+pub(crate) struct ForeignScreen(pub Arc<dyn ScreenHandler>);
+
+impl pairly_plugins::screen::ScreenHost for ForeignScreen {
+    fn start_sharing(&self, from: &pairly_core::PeerInfo) -> Result<(), String> {
+        self.0
+            .start_sharing(from.id.to_string(), from.name.clone())
+            .map_err(|e| e.to_string())
+    }
+
+    fn stop_sharing(&self, from: &pairly_core::PeerInfo) {
+        self.0.stop_sharing(from.id.to_string());
+    }
+
+    fn input(&self, from: &pairly_core::PeerInfo, input: pairly_plugins::screen::ScreenInput) {
+        self.0.input(from.id.to_string(), input.into());
+    }
+
+    fn disconnected(&self, peer: pairly_core::DeviceId) {
+        self.0.disconnected(peer.to_string());
+        self.0
+            .viewer_stopped(peer.to_string(), "the PC disconnected".into());
+    }
+
+    fn started(&self, from: &pairly_core::PeerInfo, width: u32, height: u32) {
+        self.0.viewer_started(from.id.to_string(), width, height);
+    }
+
+    fn frame(&self, from: &pairly_core::PeerInfo, frame: pairly_plugins::screen::ScreenFrame) {
+        self.0
+            .viewer_frame(from.id.to_string(), frame.data, frame.key || frame.config);
+    }
+
+    fn stopped(&self, from: &pairly_core::PeerInfo, reason: &str) {
+        self.0
+            .viewer_stopped(from.id.to_string(), reason.to_owned());
+    }
+}
+
+impl From<ScreenInputData> for pairly_plugins::screen::ScreenInput {
+    fn from(input: ScreenInputData) -> Self {
+        use pairly_plugins::screen::{ScreenInput, ScreenKey};
+        match input {
+            ScreenInputData::Tap { x, y } => ScreenInput::Tap { x, y },
+            ScreenInputData::LongPress { x, y } => ScreenInput::LongPress { x, y },
+            ScreenInputData::Swipe {
+                points,
+                duration_ms,
+            } => ScreenInput::Swipe {
+                points: points.into_iter().map(|p| (p.x, p.y)).collect(),
+                duration_ms,
+            },
+            ScreenInputData::Key { key } => ScreenInput::Key {
+                key: match key {
+                    ScreenKeyData::Back => ScreenKey::Back,
+                    ScreenKeyData::Home => ScreenKey::Home,
+                    ScreenKeyData::Recents => ScreenKey::Recents,
+                    ScreenKeyData::Enter => ScreenKey::Enter,
+                    ScreenKeyData::Backspace => ScreenKey::Backspace,
+                },
+            },
+            ScreenInputData::Text { text } => ScreenInput::Text { text },
+            ScreenInputData::Scroll { dx, dy } => ScreenInput::Scroll { dx, dy },
+        }
+    }
+}

@@ -18,8 +18,10 @@ import dev.pairly.core.ffi.MediaActionData
 import dev.pairly.core.ffi.NodeOptions
 import dev.pairly.core.ffi.LaserActionData
 import dev.pairly.core.ffi.NodeSetup
+import dev.pairly.core.ffi.ScreenInputData
 import dev.pairly.core.ffi.PowerActionData
 import dev.pairly.android.device.PhonePower
+import dev.pairly.android.screen.PhoneScreen
 import dev.pairly.core.ffi.NotificationData
 import dev.pairly.core.ffi.PairlyException
 import dev.pairly.core.ffi.TransferData
@@ -160,6 +162,7 @@ object Pairly {
                 setup.contacts(PhoneContacts(appContext))
                 setup.files(SharedFiles(appContext))
                 setup.power(PhonePower())
+                setup.screen(PhoneScreen(appContext))
                 setup.start().also { setup.close() }
             }
             node = started
@@ -252,6 +255,32 @@ object Pairly {
 
     fun inputButton(device: String, button: MouseButtonData, action: ButtonActionData) {
         runCatching { node?.inputButton(device, button, action) }
+    }
+
+    /** Ask a PC to show its screen on this phone (or stop). */
+    fun screenRequest(device: String, start: Boolean) {
+        runCatching { node?.screenRequest(device, start) }.onFailure { say(it.describe()) }
+    }
+
+    /** Control the PC screen being watched. */
+    fun screenInput(device: String, input: ScreenInputData) {
+        runCatching { node?.screenInput(device, input) }
+    }
+
+    fun screenStarted(device: String, width: Int, height: Int) {
+        runCatching { node?.screenStarted(device, width.toUInt(), height.toUInt()) }
+            .onFailure { Log.w(TAG, "screen start not sent", it) }
+    }
+
+    /**
+     * One encoded frame for the PC; skipped quietly if the link can't keep up. Returns true when
+     * the encoder should make a key frame now (frames were skipped, the PC needs one to resume).
+     */
+    fun screenFrame(device: String, data: ByteArray, key: Boolean, config: Boolean): Boolean =
+        runCatching { node?.screenFrame(device, data, key, config) }.getOrNull() == true
+
+    fun screenStopped(device: String, reason: String) {
+        runCatching { node?.screenStopped(device, reason) }
     }
 
     fun inputLaser(device: String, action: LaserActionData, dx: Float, dy: Float) {

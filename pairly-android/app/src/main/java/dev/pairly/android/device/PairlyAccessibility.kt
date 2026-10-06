@@ -1,10 +1,13 @@
 package dev.pairly.android.device
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Path
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -12,10 +15,13 @@ import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityWindowInfo
 import dev.pairly.core.ffi.PairlyException
 import dev.pairly.core.ffi.PowerActionData
 import dev.pairly.core.ffi.PowerHandler
+import dev.pairly.core.ffi.ScreenInputData
+import dev.pairly.core.ffi.ScreenKeyData
 
 /**
  * Pairly's accessibility service, which does two things only:
@@ -221,6 +227,115 @@ class PairlyAccessibility : AccessibilityService() {
         return false
     }
 
+    // ----- screen sharing: the PC controls the phone -----------------------------------------
+
+    /** A tap, long-press, swipe, key or text from the PC watching this screen. */
+    fun screenInput(input: ScreenInputData) {
+        main.post {
+            runCatching {
+                when (input) {
+                    is ScreenInputData.Tap -> stroke(listOf(point(input.x, input.y)), TAP_MS)
+                    is ScreenInputData.LongPress -> stroke(listOf(point(input.x, input.y)), LONG_PRESS_MS)
+                    is ScreenInputData.Swipe -> stroke(input.points.map { point(it.x, it.y) }, input.durationMs.toLong())
+                    is ScreenInputData.Key -> key(input.key)
+                    is ScreenInputData.Text -> type(input.text)
+                    // Scrolling: a quick swipe through the middle of the screen.
+                    is ScreenInputData.Scroll -> {
+                        val (x0, y0) = point(0.5f, 0.5f)
+                        val (w, h) = screenSize()
+                        val x1 = (x0 + input.dx * w).coerceIn(1f, w - 1f)
+                        val y1 = (y0 + input.dy * h).coerceIn(1f, h - 1f)
+                        stroke(listOf(x0 to y0, x1 to y1), SCROLL_MS)
+                    }
+                }
+            }.onFailure { Log.w(TAG, "screen input failed", it) }
+        }
+    }
+
+    /** A fraction of the screen, in real pixels (the shared screen is the whole display). */
+    private fun point(x: Float, y: Float): Pair<Float, Float> {
+        val (w, h) = screenSize()
+        return (x * (w - 1)) to (y * (h - 1))
+    }
+
+    private fun screenSize(): Pair<Int, Int> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val b = getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
+            b.width() to b.height()
+        } else {
+            val m = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            getSystemService(WindowManager::class.java).defaultDisplay.getRealMetrics(m)
+            m.widthPixels to m.heightPixels
+        }
+
+    /** One finger touching down at the first point, moving through the rest, lifting. */
+    private fun stroke(points: List<Pair<Float, Float>>, durationMs: Long) {
+        val path = Path().apply {
+            moveTo(points[0].first, points[0].second)
+            points.drop(1).forEach { (x, y) -> lineTo(x, y) }
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs.coerceIn(1, 10_000)))
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
+    private fun key(key: ScreenKeyData) {
+        when (key) {
+            ScreenKeyData.BACK -> performGlobalAction(GLOBAL_ACTION_BACK)
+            ScreenKeyData.HOME -> performGlobalAction(GLOBAL_ACTION_HOME)
+            ScreenKeyData.RECENTS -> performGlobalAction(GLOBAL_ACTION_RECENTS)
+            ScreenKeyData.ENTER -> {
+                val field = focusedField() ?: return
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+                } else {
+                    type("\n")
+                }
+            }
+            ScreenKeyData.BACKSPACE -> edit { text, start, end ->
+                if (start != end) {
+                    Triple(text.removeRange(start, end), start, start)
+                } else if (start > 0) {
+                    Triple(text.removeRange(start - 1, start), start - 1, start - 1)
+                } else {
+                    null
+                }
+            }
+        }
+    }
+
+    /** Insert `typed` at the cursor of the focused text field (replacing any selection). */
+    private fun type(typed: String) = edit { text, start, end ->
+        Triple(text.replaceRange(start, end, typed), start + typed.length, start + typed.length)
+    }
+
+    /**
+     * Change the focused field's text: `change` gets its text and selection and returns the new
+     * text and selection (or null for no change). Fields only allow replacing the whole text.
+     */
+    private fun edit(change: (String, Int, Int) -> Triple<String, Int, Int>?) {
+        val field = focusedField() ?: return
+        // A field showing its hint has no text yet.
+        val text = if (field.isShowingHintText) "" else field.text?.toString().orEmpty()
+        val start = field.textSelectionStart.takeIf { it in 0..text.length } ?: text.length
+        val end = field.textSelectionEnd.takeIf { it in start..text.length } ?: start
+        val (newText, selStart, selEnd) = change(text, start, end) ?: return
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
+        }
+        field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        val selection = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, selStart)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, selEnd)
+        }
+        field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection)
+    }
+
+    private fun focusedField(): AccessibilityNodeInfo? =
+        findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
+
     // ----- power -----------------------------------------------------------------------------
 
     fun lock() {
@@ -286,6 +401,9 @@ class PairlyAccessibility : AccessibilityService() {
 
     companion object {
         private const val TAG = "PairlyAccessibility"
+        private const val TAP_MS = 60L
+        private const val LONG_PRESS_MS = 700L
+        private const val SCROLL_MS = 150L
         private const val SYSTEM_UI = "com.android.systemui"
         private const val OVERLAY_DELAY_MS = 150L
         private const val READ_DELAY_MS = 250L

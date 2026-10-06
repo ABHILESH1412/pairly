@@ -16,6 +16,7 @@ mod notification_apps;
 mod notifications;
 mod platform;
 mod power;
+mod screen;
 mod share;
 mod sms;
 mod telephony;
@@ -77,6 +78,7 @@ pub struct Features {
     pub contacts: Arc<ContactsPlugin>,
     pub power: Arc<pairly_plugins::power::PowerPlugin>,
     pub files: Arc<FilesPlugin>,
+    pub screen_host: Arc<screen::LinuxScreen>,
 }
 
 /// The PC doesn't share its files; it only browses phones.
@@ -133,6 +135,10 @@ async fn main() -> Result<()> {
         None
     };
     let qr_timeout = node_config.qr_timeout;
+    let input_host = Arc::new(input::LinuxInput::new(
+        config.input_backend,
+        config.data_dir.clone(),
+    ));
     let registry =
         Registry::open(&config.data_dir.join("registry.db")).context("opening registry")?;
     let identity = keyring::identity(&config.data_dir, registry.device_count()?).await?;
@@ -175,6 +181,9 @@ async fn main() -> Result<()> {
     let command = CommandPlugin::new(commands.clone());
     let telephony = TelephonyPlugin::new(telephony_host.clone());
     telephony_host.set_plugin(&telephony);
+    let screen_host = screen::LinuxScreen::new();
+    let screen_plugin = pairly_plugins::screen::ScreenPlugin::new(screen_host.clone());
+    screen_host.set_plugin(&screen_plugin);
     commands.set_plugin(&command);
     let features = Features {
         notifications: NotificationPlugin::new(Arc::new(notification_host)),
@@ -193,6 +202,7 @@ async fn main() -> Result<()> {
             allowed: config.power_from_phone,
         })),
         files: FilesPlugin::new(Arc::new(NoFiles)),
+        screen_host,
     };
     let node = builder
         .plugin(Arc::new(PingPlugin))
@@ -205,13 +215,11 @@ async fn main() -> Result<()> {
         .plugin(features.telephony.clone())
         .plugin(features.contacts.clone())
         .plugin(features.power.clone())
+        .plugin(screen_plugin)
         .plugin(features.files.clone())
         .plugin(features.sms.clone())
         .plugin(features.command.clone())
-        .plugin(InputPlugin::new(Arc::new(input::LinuxInput::new(
-            config.input_backend,
-            config.data_dir.clone(),
-        ))))
+        .plugin(InputPlugin::new(input_host.clone()))
         .start()
         .await
         .context("starting node")?;
@@ -251,6 +259,12 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+    features.screen_host.setup(
+        config.screen_share,
+        input_host.clone(),
+        &config.data_dir,
+        conn.clone(),
+    );
     let forward = tokio::spawn(forward_events(conn.clone(), events, platform_events, tray));
     tokio::spawn(notifications::run(
         conn.clone(),

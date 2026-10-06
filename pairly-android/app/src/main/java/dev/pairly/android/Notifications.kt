@@ -24,6 +24,8 @@ object Notifications {
     const val CHANNEL_MEDIA = "media"
     /** Progress of file transfers. */
     const val CHANNEL_TRANSFERS = "transfers"
+    /** Screen sharing: the request to share, and the "sharing now" notice. */
+    const val CHANNEL_SCREEN = "screen"
     private const val CHANNEL_SERVICE = "service"
     private const val CHANNEL_PINGS = "pings"
     private val nextId = AtomicInteger(100)
@@ -37,6 +39,9 @@ object Notifications {
                     .build(),
                 NotificationChannelCompat.Builder(CHANNEL_PINGS, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName(context.getString(R.string.channel_pings))
+                    .build(),
+                NotificationChannelCompat.Builder(CHANNEL_SCREEN, NotificationManagerCompat.IMPORTANCE_HIGH)
+                    .setName(context.getString(R.string.channel_screen))
                     .build(),
                 NotificationChannelCompat.Builder(CHANNEL_FINDMY, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName(context.getString(R.string.channel_findmy))

@@ -26,6 +26,23 @@ impl Peers {
         lock(&self.0).keys().copied().collect()
     }
 
+    /// The link a connected peer is on.
+    pub fn transport(&self, peer: DeviceId) -> Option<pairly_core::TransportKind> {
+        lock(&self.0).get(&peer).and_then(PluginCtx::transport)
+    }
+
+    /// How many packets of `priority` wait to be written to a connected peer.
+    pub fn queued(&self, peer: DeviceId, priority: pairly_core::Priority) -> Option<usize> {
+        lock(&self.0).get(&peer).map(|c| c.queued(priority))
+    }
+
+    /// Forget the unreliable packets of `priority` still waiting for a peer.
+    pub fn drop_unreliable(&self, peer: DeviceId, priority: pairly_core::Priority) {
+        if let Some(ctx) = lock(&self.0).get(&peer) {
+            ctx.drop_unreliable(priority);
+        }
+    }
+
     pub fn name(&self, peer: DeviceId) -> Option<String> {
         lock(&self.0).get(&peer).map(|c| c.peer_name().to_owned())
     }

@@ -119,7 +119,7 @@ fn spawn() -> std::io::Result<(Child, ChildStdin)> {
 }
 
 /// `pairly-gtk` next to this binary (an install keeps them together), else from PATH.
-fn gtk_binary() -> PathBuf {
+pub fn gtk_binary() -> PathBuf {
     std::env::current_exe()
         .ok()
         .map(|exe| exe.with_file_name("pairly-gtk"))

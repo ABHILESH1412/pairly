@@ -19,7 +19,7 @@ use std::sync::{Mutex, PoisonError};
 use pairly_core::PeerInfo;
 use pairly_plugins::input::{InputHost, KeyInput, PointerButton, PointerMotion};
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,12 +36,17 @@ trait Backend {
     fn motion(&mut self, m: PointerMotion) -> Result<(), String>;
     fn button(&mut self, b: PointerButton) -> Result<(), String>;
     fn key(&mut self, k: &KeyInput) -> Result<(), String>;
+    /// Put the pointer at `fx`, `fy` (fractions) of the monitor at `monitor` in the desktop.
+    fn place(&mut self, _monitor: (i32, i32), _fx: f32, _fy: f32) -> Result<(), String> {
+        Err("this input method can't place the pointer at a spot".into())
+    }
 }
 
 enum Cmd {
     Pointer(PointerMotion),
     Button(PointerButton),
     Key(KeyInput),
+    Place((i32, i32), f32, f32),
 }
 
 /// The plugin's handle: commands go to a thread that owns the backend.
@@ -61,6 +66,24 @@ impl LinuxInput {
             tx: Mutex::new(None),
             laser: crate::laser::Laser::new(),
         }
+    }
+
+    /// Put the pointer at a spot on a monitor (screen sharing: a tap on the phone).
+    pub fn place(&self, monitor: (i32, i32), fx: f32, fy: f32) {
+        self.send(Cmd::Place(monitor, fx, fy));
+    }
+
+    pub fn press(&self, button: PointerButton) {
+        self.send(Cmd::Button(button));
+    }
+
+    pub fn scroll(&self, scroll_x: f32, scroll_y: f32) {
+        self.send(Cmd::Pointer(PointerMotion {
+            dx: 0.0,
+            dy: 0.0,
+            scroll_x,
+            scroll_y,
+        }));
     }
 
     fn send(&self, cmd: Cmd) {
@@ -136,6 +159,11 @@ fn run(choice: BackendChoice, data_dir: &std::path::Path, rx: &mpsc::Receiver<Cm
             Cmd::Pointer(m) => backend.motion(m),
             Cmd::Button(b) => backend.button(b),
             Cmd::Key(k) => backend.key(&k),
+            // A backend that can't place the pointer just ignores it.
+            Cmd::Place(monitor, fx, fy) => backend.place(monitor, fx, fy).or_else(|e| {
+                debug!(error = %e, "pointer placement unavailable");
+                Ok(())
+            }),
         };
         if let Err(e) = result {
             warn!(error = %e, "remote input failed; reconnecting on the next event");

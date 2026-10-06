@@ -16,6 +16,7 @@ pub mod notification;
 mod peers;
 pub mod ping;
 pub mod power;
+pub mod screen;
 pub mod share;
 pub mod sms;
 pub mod telephony;

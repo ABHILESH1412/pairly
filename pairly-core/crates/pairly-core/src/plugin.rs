@@ -39,6 +39,11 @@ impl PluginCtx {
         self.peer
     }
 
+    /// The link the session is on right now (`None` while reconnecting).
+    pub fn transport(&self) -> Option<crate::TransportKind> {
+        self.session.transport()
+    }
+
     pub fn peer_name(&self) -> &str {
         &self.identity.name
     }
@@ -56,6 +61,16 @@ impl PluginCtx {
 
     pub fn peer_accepts(&self, ty: &str) -> bool {
         accepts(&self.identity, ty)
+    }
+
+    /// How many packets of `priority` are waiting to be written to the peer.
+    pub fn queued(&self, priority: crate::Priority) -> usize {
+        self.session.queued(priority)
+    }
+
+    /// Forget the unreliable packets of `priority` still waiting for the peer.
+    pub fn drop_unreliable(&self, priority: crate::Priority) {
+        self.session.drop_unreliable(priority);
     }
 
     /// Queue a packet to the peer. Returns its id, or `None` if it was unreliable and dropped.

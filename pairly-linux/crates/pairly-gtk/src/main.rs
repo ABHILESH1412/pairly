@@ -5,10 +5,12 @@
 //! `pairly-gtk --reply <device> <notification> <title>` opens a reply window (used by pairlyd
 //! when the notification server has no inline replies), and
 //! `pairly-gtk --send [--to <device>] [files…]` sends files (file managers, the tray), and
-//! `pairly-gtk --laser` is the laser pointer overlay (started by pairlyd).
+//! `pairly-gtk --laser` is the laser pointer overlay, and `pairly-gtk --screen <name>` a
+//! phone's screen (both started by pairlyd).
 #![forbid(unsafe_code)]
 
 mod app;
+mod cast;
 mod commands;
 mod contacts;
 mod files;
@@ -17,6 +19,8 @@ mod messages;
 mod notification_apps;
 mod qr;
 mod reply;
+mod screen;
+mod screencopy;
 mod send;
 
 use std::collections::HashMap;
@@ -32,6 +36,18 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--laser") {
         laser::run();
+        return;
+    }
+    if let [flag, token_file, ..] = args.as_slice()
+        && flag == "--cast"
+    {
+        cast::run(token_file);
+        return;
+    }
+    if let [flag, title, ..] = args.as_slice()
+        && flag == "--screen"
+    {
+        screen::run(title);
         return;
     }
     if let [flag, device, notification, title, ..] = args.as_slice()
