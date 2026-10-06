@@ -49,6 +49,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import dev.pairly.android.device.LaserPointer
+import androidx.compose.material.icons.outlined.Adjust
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.pluralStringResource
@@ -154,6 +162,10 @@ fun DeviceScreen(
     var confirmUnpair by remember { mutableStateOf(false) }
     var confirmPower by remember { mutableStateOf(false) }
     val isPc = device.kind == DeviceKind.DESKTOP || device.kind == DeviceKind.LAPTOP
+    val context = LocalContext.current
+    val laser = remember(device.id) { LaserPointer(context, device.id) }
+    // Never leave the pointer showing (e.g. leaving the screen while holding it).
+    DisposableEffect(laser) { onDispose { laser.stop() } }
     val on = device.link != null
     Scaffold(
         topBar = {
@@ -201,6 +213,17 @@ fun DeviceScreen(
                 add(Tile(Icons.Outlined.Mouse, stringResource(R.string.action_remote), on, actions.remote))
                 add(Tile(Icons.Outlined.Slideshow, stringResource(R.string.action_presenter), on, actions.presenter))
                 actions.commands?.let { add(Tile(Icons.Outlined.Terminal, stringResource(R.string.action_commands), on, it)) }
+                if (isPc && laser.available) {
+                    add(
+                        Tile(
+                            Icons.Outlined.Adjust,
+                            stringResource(R.string.action_pointer),
+                            on,
+                            onClick = {},
+                            onHold = { down -> if (down) laser.start() else laser.stop() },
+                        ),
+                    )
+                }
                 if (isPc) {
                     add(Tile(Icons.Outlined.Lock, stringResource(R.string.action_lock_pc), on) { actions.power(PowerActionData.LOCK) })
                     add(Tile(Icons.Outlined.PowerSettingsNew, stringResource(R.string.action_power_off), on) { confirmPower = true })
@@ -268,6 +291,8 @@ private class Tile(
     val enabled: Boolean,
     val onClick: () -> Unit,
     val highlight: Boolean = false,
+    /** A tile you hold instead of tap: true when pressed, false when let go. */
+    val onHold: ((Boolean) -> Unit)? = null,
 ) {
     constructor(icon: ImageVector, label: String, enabled: Boolean, highlight: Boolean = false, onClick: () -> Unit) :
         this(icon, label, enabled, onClick, highlight)
@@ -286,7 +311,9 @@ private fun ActionTile(tile: Tile, modifier: Modifier) {
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         )
     }
-    Card(onClick = tile.onClick, enabled = tile.enabled, colors = colors, modifier = modifier.height(104.dp)) {
+    val hold = tile.onHold
+    var held by remember { mutableStateOf(false) }
+    val content: @Composable ColumnScope.() -> Unit = {
         Column(
             Modifier.fillMaxWidth().padding(8.dp).weight(1f),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -302,5 +329,28 @@ private fun ActionTile(tile: Tile, modifier: Modifier) {
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+    if (hold == null) {
+        Card(onClick = tile.onClick, enabled = tile.enabled, colors = colors, modifier = modifier.height(104.dp), content = content)
+    } else {
+        val pressedColors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        )
+        Card(
+            colors = if (held) pressedColors else colors,
+            content = content,
+            modifier = modifier.height(104.dp).pointerInput(tile.enabled) {
+                if (!tile.enabled) return@pointerInput
+                awaitEachGesture {
+                    awaitFirstDown()
+                    held = true
+                    hold(true)
+                    while (awaitPointerEvent().changes.any { it.pressed }) Unit
+                    held = false
+                    hold(false)
+                }
+            },
+        )
     }
 }

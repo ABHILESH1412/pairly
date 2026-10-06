@@ -42,6 +42,11 @@ android {
     }
 
     buildTypes {
+        // Development builds install next to the released app ("Pairly Dev"), since they can't
+        // be signed with the release key; the release keeps the plain application id.
+        debug {
+            applicationIdSuffix = ".dev"
+        }
         release {
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             isMinifyEnabled = true

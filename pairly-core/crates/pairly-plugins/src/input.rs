@@ -100,11 +100,36 @@ impl PacketBody for KeyInput {
 
 pub const MAX_TEXT: usize = 1000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaserAction {
+    Show,
+    Move,
+    Hide,
+}
+
+/// Phone → PC: the presentation laser pointer, a dot drawn over everything on the PC's screen.
+/// `dx`/`dy` move it by a fraction of the screen's width/height (from the phone's gyroscope).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LaserPointer {
+    pub action: LaserAction,
+    #[serde(default)]
+    pub dx: f32,
+    #[serde(default)]
+    pub dy: f32,
+}
+
+impl PacketBody for LaserPointer {
+    const TYPE: &'static str = "input.laser";
+}
+
 /// Applies input on this device (the PC).
 pub trait InputHost: Send + Sync + 'static {
     fn pointer(&self, from: &PeerInfo, motion: PointerMotion);
     fn button(&self, from: &PeerInfo, button: PointerButton);
     fn key(&self, from: &PeerInfo, key: &KeyInput);
+    /// Show, move or hide the laser pointer; devices without a screen to draw on ignore it.
+    fn laser(&self, _from: &PeerInfo, _laser: LaserPointer) {}
 }
 
 pub struct InputPlugin {
@@ -134,6 +159,17 @@ impl InputPlugin {
         )
     }
 
+    /// Showing and hiding always arrive; moves are sent like pointer motion (a lost one is
+    /// overtaken by the next).
+    pub fn laser(&self, peer: DeviceId, laser: LaserPointer) -> Result<()> {
+        let packet = if laser.action == LaserAction::Move {
+            OutboundPacket::unreliable(&laser, Priority::Interactive)?
+        } else {
+            OutboundPacket::reliable(&laser, Priority::Interactive)?
+        };
+        self.peers.send(peer, packet)
+    }
+
     pub fn key(&self, peer: DeviceId, key: &KeyInput) -> Result<()> {
         if key.text.as_ref().is_some_and(|t| t.len() > MAX_TEXT) {
             return Err(pairly_core::CoreError::Violation("text too long"));
@@ -158,7 +194,12 @@ impl Plugin for InputPlugin {
     }
 
     fn incoming(&self) -> &'static [&'static str] {
-        &[PointerMotion::TYPE, PointerButton::TYPE, KeyInput::TYPE]
+        &[
+            PointerMotion::TYPE,
+            PointerButton::TYPE,
+            KeyInput::TYPE,
+            LaserPointer::TYPE,
+        ]
     }
 
     fn outgoing(&self) -> &'static [&'static str] {
@@ -194,6 +235,18 @@ impl Plugin for InputPlugin {
                 }
                 Ok(_) => {}
                 Err(e) => debug!(peer = %from.id, error = %e, "bad input.key"),
+            },
+            LaserPointer::TYPE => match packet.body::<LaserPointer>() {
+                Ok(l) => self.host.laser(
+                    &from,
+                    LaserPointer {
+                        action: l.action,
+                        // A move is a fraction of the screen.
+                        dx: finite(l.dx).clamp(-1.0, 1.0),
+                        dy: finite(l.dy).clamp(-1.0, 1.0),
+                    },
+                ),
+                Err(e) => debug!(peer = %from.id, error = %e, "bad input.laser"),
             },
             _ => {}
         }

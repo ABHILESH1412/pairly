@@ -10,6 +10,7 @@ mod contacts;
 mod dbus;
 mod input;
 mod keyring;
+mod laser;
 mod media;
 mod notification_apps;
 mod notifications;

@@ -153,6 +153,9 @@
     <string name="feature_files_body">Let the PC browse, copy and manage this phone\'s storage (Android calls this “All files access”).</string>
     <string name="sms_sent">Text sent</string>
     <string name="sms_picture">Picture message</string>
+    <string name="action_pointer">Pointer (hold)</string>
+    <string name="presenter_pointer">Hold to point</string>
+    <string name="presenter_pointing">Pointing… turn the phone</string>
     <string name="action_lock_pc">Lock</string>
     <string name="action_power_off">Power off</string>
     <string name="action_restart">Restart</string>

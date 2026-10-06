@@ -4,13 +4,15 @@
 //! `pairly-gtk --pair` opens straight to the pairing QR code (used by the tray menu),
 //! `pairly-gtk --reply <device> <notification> <title>` opens a reply window (used by pairlyd
 //! when the notification server has no inline replies), and
-//! `pairly-gtk --send [--to <device>] [files…]` sends files (file managers, the tray).
+//! `pairly-gtk --send [--to <device>] [files…]` sends files (file managers, the tray), and
+//! `pairly-gtk --laser` is the laser pointer overlay (started by pairlyd).
 #![forbid(unsafe_code)]
 
 mod app;
 mod commands;
 mod contacts;
 mod files;
+mod laser;
 mod messages;
 mod notification_apps;
 mod qr;
@@ -28,6 +30,10 @@ const APP_PATH: &str = "/io/github/abhilesh1412/Pairly";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--laser") {
+        laser::run();
+        return;
+    }
     if let [flag, device, notification, title, ..] = args.as_slice()
         && flag == "--reply"
     {

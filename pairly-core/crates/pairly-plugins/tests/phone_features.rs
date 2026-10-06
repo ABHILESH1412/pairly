@@ -10,8 +10,8 @@ use pairly_core::{DeviceType, NodeConfig, NodeEvent, PairlyNode, PeerInfo};
 use pairly_plugins::command::{CommandDone, CommandHost, CommandInfo, CommandPlugin};
 use pairly_plugins::contacts::{Contact, ContactsHost, ContactsPlugin};
 use pairly_plugins::input::{
-    ButtonAction, InputHost, InputPlugin, KeyInput, Modifiers, MouseButton, PointerButton,
-    PointerMotion, SpecialKey,
+    ButtonAction, InputHost, InputPlugin, KeyInput, LaserAction, LaserPointer, Modifiers,
+    MouseButton, PointerButton, PointerMotion, SpecialKey,
 };
 use pairly_plugins::power::{PowerAction, PowerHost, PowerPlugin};
 use pairly_plugins::sms::{Conversation, Message, SmsHost, SmsPlugin};
@@ -32,6 +32,7 @@ enum Call {
     Pointer(f32, f32),
     Button(MouseButton),
     Key(Option<String>, Option<SpecialKey>, bool),
+    Laser(LaserAction, f32, f32),
 }
 
 struct Host {
@@ -178,6 +179,9 @@ impl InputHost for Host {
     }
     fn key(&self, _: &PeerInfo, k: &KeyInput) {
         self.call(Call::Key(k.text.clone(), k.key, k.modifiers.ctrl));
+    }
+    fn laser(&self, _: &PeerInfo, l: LaserPointer) {
+        self.call(Call::Laser(l.action, l.dx, l.dy));
     }
 }
 
@@ -385,4 +389,22 @@ async fn calls_texts_commands_and_input() {
         pc.next().await,
         Call::Key(None, Some(SpecialKey::Tab), true)
     );
+
+    // Laser pointer: shown, moved (by a fraction of the screen, clamped), hidden.
+    let laser = |action, dx, dy| LaserPointer { action, dx, dy };
+    phone
+        .input
+        .laser(pc_id, laser(LaserAction::Show, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(pc.next().await, Call::Laser(LaserAction::Show, 0.0, 0.0));
+    phone
+        .input
+        .laser(pc_id, laser(LaserAction::Move, 0.25, 7.0))
+        .unwrap();
+    assert_eq!(pc.next().await, Call::Laser(LaserAction::Move, 0.25, 1.0));
+    phone
+        .input
+        .laser(pc_id, laser(LaserAction::Hide, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(pc.next().await, Call::Laser(LaserAction::Hide, 0.0, 0.0));
 }

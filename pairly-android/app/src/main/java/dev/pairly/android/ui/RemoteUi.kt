@@ -36,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +50,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -58,18 +60,26 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import dev.pairly.android.Pairly
 import dev.pairly.android.R
+import dev.pairly.android.device.LaserPointer
 import dev.pairly.core.ffi.ButtonActionData
 import dev.pairly.core.ffi.Device
 import dev.pairly.core.ffi.KeyData
 import dev.pairly.core.ffi.ModifiersData
 import dev.pairly.core.ffi.MouseButtonData
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 private const val SENSITIVITY = 1.4f
 private const val SCROLL_SCALE = 0.6f
 private const val TAP_MS = 250L
 private const val FRAME_MS = 16L
+/** After a tap, how long a new touch turns into a drag (as laptop touchpads do). */
+private const val DRAG_WINDOW_MS = 200L
+/** Held arrow keys repeat like a keyboard's: after this, then every REPEAT_MS. */
+private const val REPEAT_DELAY_MS = 400L
+private const val REPEAT_MS = 60L
 
 /** Accumulates finger movement and sends it once per frame. */
 private class Mover(private val device: String) {
@@ -156,22 +166,36 @@ fun RemoteInputScreen(device: Device, onBack: () -> Unit) {
                 FilterChip(mods.logo, { mods = mods.copy(logo = !mods.logo) }, { Text("Super") })
                 OutlinedButton(onClick = { key(KeyData.Escape) }) { Text("Esc") }
                 OutlinedButton(onClick = { key(KeyData.Tab) }) { Text("Tab") }
-                OutlinedButton(onClick = { key(KeyData.Left) }) { Text("←") }
-                OutlinedButton(onClick = { key(KeyData.Up) }) { Text("↑") }
-                OutlinedButton(onClick = { key(KeyData.Down) }) { Text("↓") }
-                OutlinedButton(onClick = { key(KeyData.Right) }) { Text("→") }
-                OutlinedButton(onClick = { key(KeyData.Enter) }) { Text("Enter") }
-                OutlinedButton(onClick = { key(KeyData.Backspace) }) { Text("⌫") }
+                OutlinedButton(onClick = { key(KeyData.Home) }) { Text("Home") }
+                OutlinedButton(onClick = { key(KeyData.End) }) { Text("End") }
+                OutlinedButton(onClick = { key(KeyData.Delete) }) { Text("Del") }
+            }
+            // Always in view: the arrows (held: repeat), Enter and Backspace.
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                RepeatKey("←", Modifier.weight(1f)) { key(KeyData.Left) }
+                RepeatKey("↑", Modifier.weight(1f)) { key(KeyData.Up) }
+                RepeatKey("↓", Modifier.weight(1f)) { key(KeyData.Down) }
+                RepeatKey("→", Modifier.weight(1f)) { key(KeyData.Right) }
+                RepeatKey("⌫", Modifier.weight(1f)) { key(KeyData.Backspace) }
+                RepeatKey("⏎", Modifier.weight(1f)) { key(KeyData.Enter) }
             }
             KeyCatcher(focus, onText = ::text, onBackspace = { key(KeyData.Backspace) })
         }
     }
 }
 
-/** The touchpad surface: move, two-finger scroll, tap to click (two fingers: right, three: middle). */
+/**
+ * The touchpad surface: move, two-finger scroll, tap to click (two fingers: right, three:
+ * middle). Like a laptop touchpad, a one-finger tap waits [DRAG_WINDOW_MS]: touching again
+ * within it holds the left button down while you move (select text, drag windows), and a
+ * second quick tap makes it a double-click.
+ */
 @Composable
 private fun Touchpad(mover: Mover, device: String, modifier: Modifier) {
     val slop = LocalViewConfiguration.current.touchSlop
+    val scope = rememberCoroutineScope()
+    // The click of the last one-finger tap, still waiting to see if a drag follows.
+    val pendingClick = remember { arrayOfNulls<Job>(1) }
     Box(
         modifier
             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp))
@@ -181,18 +205,36 @@ private fun Touchpad(mover: Mover, device: String, modifier: Modifier) {
                     val start = down.uptimeMillis
                     var fingers = 1
                     var travel = 0f
+                    // Touched again right after a tap: hold the button down instead of clicking.
+                    val dragging = pendingClick[0]?.isActive == true
+                    if (dragging) {
+                        pendingClick[0]?.cancel()
+                        pendingClick[0] = null
+                        Pairly.inputButton(device, MouseButtonData.LEFT, ButtonActionData.PRESS)
+                    }
                     while (true) {
                         val event = awaitPointerEvent()
                         val pressed = event.changes.filter { it.pressed }
                         if (pressed.isEmpty()) {
                             val tap = travel < slop && event.changes.first().uptimeMillis - start < TAP_MS * fingers
-                            if (tap) {
-                                val button = when (fingers) {
-                                    1 -> MouseButtonData.LEFT
-                                    2 -> MouseButtonData.RIGHT
-                                    else -> MouseButtonData.MIDDLE
+                            when {
+                                dragging -> {
+                                    // Movement first, so the drag ends where the finger did.
+                                    mover.flush()
+                                    Pairly.inputButton(device, MouseButtonData.LEFT, ButtonActionData.RELEASE)
+                                    // Tap, tap without moving: that was a double-click.
+                                    if (tap) Pairly.inputButton(device, MouseButtonData.LEFT, ButtonActionData.CLICK)
                                 }
-                                Pairly.inputButton(device, button, ButtonActionData.CLICK)
+                                tap && fingers == 1 -> {
+                                    pendingClick[0] = scope.launch {
+                                        delay(DRAG_WINDOW_MS)
+                                        Pairly.inputButton(device, MouseButtonData.LEFT, ButtonActionData.CLICK)
+                                    }
+                                }
+                                tap -> {
+                                    val button = if (fingers == 2) MouseButtonData.RIGHT else MouseButtonData.MIDDLE
+                                    Pairly.inputButton(device, button, ButtonActionData.CLICK)
+                                }
                             }
                             break
                         }
@@ -240,6 +282,35 @@ private fun HoldButton(label: String, device: String, button: MouseButtonData, m
     }
 }
 
+/** A key that sends once when touched and repeats while held, like a keyboard's. */
+@Composable
+private fun RepeatKey(label: String, modifier: Modifier, onKey: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    Box(
+        modifier
+            .height(48.dp)
+            .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(12.dp))
+            .pointerInput(label) {
+                awaitEachGesture {
+                    awaitFirstDown()
+                    onKey()
+                    val repeat = scope.launch {
+                        delay(REPEAT_DELAY_MS)
+                        while (true) {
+                            onKey()
+                            delay(REPEAT_MS)
+                        }
+                    }
+                    while (awaitPointerEvent().changes.any { it.pressed }) Unit
+                    repeat.cancel()
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)
+    }
+}
+
 /**
  * An invisible text field for the phone's keyboard. It always holds one placeholder character,
  * so typed text shows up as additions and Backspace as the placeholder being deleted.
@@ -265,6 +336,36 @@ private fun KeyCatcher(focus: FocusRequester, onText: (String) -> Unit, onBacksp
     )
 }
 
+/** Hold to show the laser pointer on the PC; it follows the phone until you let go. */
+@Composable
+private fun PointerButton(laser: LaserPointer, modifier: Modifier) {
+    var held by remember { mutableStateOf(false) }
+    Box(
+        modifier
+            .background(
+                if (held) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer,
+                RoundedCornerShape(24.dp),
+            )
+            .pointerInput(laser) {
+                awaitEachGesture {
+                    awaitFirstDown()
+                    held = true
+                    laser.start()
+                    while (awaitPointerEvent().changes.any { it.pressed }) Unit
+                    held = false
+                    laser.stop()
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            stringResource(if (held) R.string.presenter_pointing else R.string.presenter_pointer),
+            style = MaterialTheme.typography.titleLarge,
+            color = if (held) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onTertiaryContainer,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PresenterScreen(device: Device, onBack: () -> Unit) {
@@ -279,6 +380,9 @@ fun PresenterScreen(device: Device, onBack: () -> Unit) {
         onDispose { view.keepScreenOn = false }
     }
     LaunchedEffect(Unit) { focus.requestFocus() }
+    val context = LocalContext.current
+    val laser = remember(device.id) { LaserPointer(context, device.id) }
+    DisposableEffect(laser) { onDispose { laser.stop() } }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -312,6 +416,7 @@ fun PresenterScreen(device: Device, onBack: () -> Unit) {
             Button(onClick = { key(KeyData.Right) }, modifier = Modifier.fillMaxWidth().weight(2f)) {
                 Text(stringResource(R.string.presenter_next), style = MaterialTheme.typography.headlineMedium)
             }
+            if (laser.available) PointerButton(laser, Modifier.fillMaxWidth().weight(1f))
             FilledTonalButton(onClick = { key(KeyData.Left) }, modifier = Modifier.fillMaxWidth().weight(1f)) {
                 Text(stringResource(R.string.presenter_previous), style = MaterialTheme.typography.titleLarge)
             }

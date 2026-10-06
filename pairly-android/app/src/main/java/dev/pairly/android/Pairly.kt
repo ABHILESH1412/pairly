@@ -16,6 +16,7 @@ import dev.pairly.core.ffi.EventListener
 import dev.pairly.core.ffi.Node
 import dev.pairly.core.ffi.MediaActionData
 import dev.pairly.core.ffi.NodeOptions
+import dev.pairly.core.ffi.LaserActionData
 import dev.pairly.core.ffi.NodeSetup
 import dev.pairly.core.ffi.PowerActionData
 import dev.pairly.android.device.PhonePower
@@ -251,6 +252,10 @@ object Pairly {
 
     fun inputButton(device: String, button: MouseButtonData, action: ButtonActionData) {
         runCatching { node?.inputButton(device, button, action) }
+    }
+
+    fun inputLaser(device: String, action: LaserActionData, dx: Float, dy: Float) {
+        runCatching { node?.inputLaser(device, action, dx, dy) }
     }
 
     fun inputKey(device: String, text: String?, key: KeyData?, modifiers: ModifiersData) {

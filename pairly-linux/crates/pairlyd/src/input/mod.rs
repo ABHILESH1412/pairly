@@ -50,6 +50,7 @@ pub struct LinuxInput {
     /// Where the portal backend keeps its "remember this permission" token.
     data_dir: PathBuf,
     tx: Mutex<Option<mpsc::Sender<Cmd>>>,
+    laser: std::sync::Arc<crate::laser::Laser>,
 }
 
 impl LinuxInput {
@@ -58,6 +59,7 @@ impl LinuxInput {
             choice,
             data_dir,
             tx: Mutex::new(None),
+            laser: crate::laser::Laser::new(),
         }
     }
 
@@ -91,6 +93,9 @@ impl InputHost for LinuxInput {
     }
     fn key(&self, _from: &PeerInfo, key: &KeyInput) {
         self.send(Cmd::Key(key.clone()));
+    }
+    fn laser(&self, _from: &PeerInfo, laser: pairly_plugins::input::LaserPointer) {
+        self.laser.handle(laser);
     }
 }
 

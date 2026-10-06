@@ -39,9 +39,9 @@ pub use bluetooth::{BluetoothHandler, BluetoothSocket, bluetooth_service_uuid};
 pub use media::{MediaActionData, MediaHandler, PlayerData};
 pub use phone::{
     AttachmentData, ButtonActionData, CallActionData, CallStateData, CommandData, CommandHandler,
-    ContactData, ContactsHandler, ConversationData, FilesHandler, KeyData, MessageData,
-    ModifiersData, MouseButtonData, OutgoingAttachmentData, PowerActionData, PowerHandler,
-    SmsHandler, TelephonyHandler,
+    ContactData, ContactsHandler, ConversationData, FilesHandler, KeyData, LaserActionData,
+    MessageData, ModifiersData, MouseButtonData, OutgoingAttachmentData, PowerActionData,
+    PowerHandler, SmsHandler, TelephonyHandler,
 };
 
 uniffi::setup_scaffolding!();
@@ -1118,6 +1118,20 @@ impl Node {
         Ok(self
             .input
             .button(parse_id(&device)?, phone::button(button, action))?)
+    }
+
+    /// The laser pointer on a PC's screen: show it, move it by a fraction of the screen
+    /// (`dx`, `dy`, from the gyroscope), hide it.
+    pub fn input_laser(
+        &self,
+        device: String,
+        action: LaserActionData,
+        dx: f32,
+        dy: f32,
+    ) -> Result<(), PairlyError> {
+        Ok(self
+            .input
+            .laser(parse_id(&device)?, phone::laser(action, dx, dy))?)
     }
 
     /// Type `text`, or press one special `key`, with `modifiers` held.

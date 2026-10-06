@@ -373,6 +373,31 @@ pub enum MouseButtonData {
     Middle,
 }
 
+/// The presentation laser pointer: show it, move it, hide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LaserActionData {
+    Show,
+    Move,
+    Hide,
+}
+
+pub(crate) fn laser(
+    action: LaserActionData,
+    dx: f32,
+    dy: f32,
+) -> pairly_plugins::input::LaserPointer {
+    use pairly_plugins::input::LaserAction;
+    pairly_plugins::input::LaserPointer {
+        action: match action {
+            LaserActionData::Show => LaserAction::Show,
+            LaserActionData::Move => LaserAction::Move,
+            LaserActionData::Hide => LaserAction::Hide,
+        },
+        dx,
+        dy,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ButtonActionData {
     Click,

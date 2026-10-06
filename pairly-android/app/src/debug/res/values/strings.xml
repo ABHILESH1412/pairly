@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Development builds sit next to the released app; tell them apart. -->
+    <string name="app_name">Pairly Dev</string>
+</resources>
