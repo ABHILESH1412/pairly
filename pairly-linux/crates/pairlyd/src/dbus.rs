@@ -11,6 +11,7 @@ pub struct DaemonIface {
     pub qr_timeout: std::time::Duration,
     pub data_dir: std::path::PathBuf,
     pub cache_dir: std::path::PathBuf,
+    pub notification_apps: std::sync::Arc<crate::notification_apps::AppFilter>,
 }
 
 fn parse_id(id: &str) -> fdo::Result<DeviceId> {
@@ -485,6 +486,23 @@ impl DaemonIface {
             .telephony
             .control(parse_id(id)?, action)
             .map_err(failed)
+    }
+
+    async fn list_notification_apps(&self) -> Vec<pairly_dbus::NotificationApp> {
+        self.notification_apps
+            .list()
+            .into_iter()
+            .map(|(name, state)| pairly_dbus::NotificationApp {
+                name,
+                send: !state.muted,
+                last_seen: state.last_seen,
+            })
+            .collect()
+    }
+
+    async fn set_notification_app_send(&self, app: &str, send: bool) {
+        tracing::info!(app, send, "notification app setting");
+        self.notification_apps.set_muted(app, !send);
     }
 
     async fn list_commands(&self) -> Vec<pairly_dbus::Command> {

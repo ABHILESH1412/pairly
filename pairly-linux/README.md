@@ -78,7 +78,8 @@ open_urls = true            # false: a notification with an Open button instead
 [notifications]
 send = true                 # forward this PC's notifications to your phone
 show = true                 # show your phone's notifications here
-ignore_apps = ["Spotify"]   # app names never forwarded
+ignore_apps = ["Spotify"]   # app names never forwarded (or switch apps off in the app's
+                            # "PC Notifications" window: the bell button in the sidebar)
 reply = "auto"              # "inline", "dialog" or "auto"
 dismiss_on_phone = true     # closing a phone's notification here clears it on the phone
 

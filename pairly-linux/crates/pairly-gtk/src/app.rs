@@ -63,6 +63,8 @@ pub enum Input {
     /// Open the Messages window for a phone.
     OpenMessages(String),
     OpenCommands,
+    /// Choose which of this PC's apps send notifications to the phone.
+    OpenNotificationApps,
     /// Open the Contacts window for a phone.
     OpenContacts(String),
     /// Browse a phone's files.
@@ -354,6 +356,15 @@ impl Component for App {
             move |_| sender.input(Input::OpenCommands)
         });
         sidebar_header.pack_start(&commands_button);
+        let notifications_button = gtk::Button::builder()
+            .icon_name("preferences-system-notifications-symbolic")
+            .tooltip_text("Which PC Notifications Go to Your Phone")
+            .build();
+        notifications_button.connect_clicked({
+            let sender = sender.clone();
+            move |_| sender.input(Input::OpenNotificationApps)
+        });
+        sidebar_header.pack_start(&notifications_button);
         let list = gtk::ListBox::new();
         list.add_css_class("navigation-sidebar");
         list.connect_row_activated({
@@ -625,6 +636,12 @@ impl Component for App {
             Input::OpenCommands => {
                 if let Some(daemon) = self.daemon.clone() {
                     crate::commands::open(window, daemon);
+                }
+                return;
+            }
+            Input::OpenNotificationApps => {
+                if let Some(daemon) = self.daemon.clone() {
+                    crate::notification_apps::open(window, daemon);
                 }
                 return;
             }

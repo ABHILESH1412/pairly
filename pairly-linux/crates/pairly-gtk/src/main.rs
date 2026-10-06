@@ -12,6 +12,7 @@ mod commands;
 mod contacts;
 mod files;
 mod messages;
+mod notification_apps;
 mod qr;
 mod reply;
 mod send;

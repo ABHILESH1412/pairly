@@ -146,6 +146,16 @@ pub struct Contact {
     pub numbers: Vec<String>,
 }
 
+/// An app on this PC that has posted notifications, and whether they go to paired devices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct NotificationApp {
+    /// The name the app gives its notifications, e.g. "Screenshot".
+    pub name: String,
+    pub send: bool,
+    /// Unix seconds (to the hour) of its latest notification.
+    pub last_seen: u64,
+}
+
 /// A command paired devices may run on this PC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Command {
@@ -236,6 +246,10 @@ pub trait Daemon {
     fn dial(&self, id: &str, number: &str) -> zbus::Result<()>;
     /// Act on the phone's current call: `answer`, `speaker`, `reject` or `hangup`.
     fn call_action(&self, id: &str, action: &str) -> zbus::Result<()>;
+    /// Apps on this PC that have posted notifications.
+    fn list_notification_apps(&self) -> zbus::Result<Vec<NotificationApp>>;
+    /// Send (or stop sending) an app's notifications to paired devices.
+    fn set_notification_app_send(&self, app: &str, send: bool) -> zbus::Result<()>;
     /// Commands paired devices may run on this PC.
     fn list_commands(&self) -> zbus::Result<Vec<Command>>;
     /// Returns the new command's id.

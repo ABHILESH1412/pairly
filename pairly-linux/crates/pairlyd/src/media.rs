@@ -726,7 +726,9 @@ impl MprisPlayer {
         };
         put(
             "mpris:trackid",
-            Value::from(ObjectPath::from_static_str_unchecked("/io/github/abhilesh1412/Pairly/track")),
+            Value::from(ObjectPath::from_static_str_unchecked(
+                "/io/github/abhilesh1412/Pairly/track",
+            )),
         );
         put("xesam:title", Value::from(p.title.clone()));
         if !p.artist.is_empty() {

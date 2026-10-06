@@ -11,6 +11,7 @@ mod dbus;
 mod input;
 mod keyring;
 mod media;
+mod notification_apps;
 mod notifications;
 mod platform;
 mod power;
@@ -215,6 +216,7 @@ async fn main() -> Result<()> {
         .context("starting node")?;
     let events = node.subscribe();
 
+    let notification_apps = Arc::new(notification_apps::AppFilter::load(&config.data_dir));
     let conn = zbus::connection::Builder::session()?
         .serve_at(
             pairly_dbus::OBJECT_PATH,
@@ -224,6 +226,7 @@ async fn main() -> Result<()> {
                 qr_timeout,
                 data_dir: config.data_dir.clone(),
                 cache_dir: cache_dir.clone(),
+                notification_apps: notification_apps.clone(),
             },
         )?
         .name(config.bus_name.as_str())?
@@ -253,6 +256,7 @@ async fn main() -> Result<()> {
         features.notifications.clone(),
         notification_cmds,
         config.notifications.clone(),
+        notification_apps.clone(),
     ));
     tokio::spawn(battery::watch(
         features.battery.clone(),

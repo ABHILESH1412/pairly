@@ -374,6 +374,7 @@ pub async fn run(
     plugin: Arc<NotificationPlugin>,
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
     settings: Settings,
+    apps: Arc<crate::notification_apps::AppFilter>,
 ) {
     let caps: Vec<String> = match conn
         .call_method(Some(SERVICE), PATH, Some(IFACE), "GetCapabilities", &())
@@ -413,7 +414,7 @@ pub async fn run(
     {
         let (plugin, settings) = (plugin.clone(), settings.clone());
         tokio::spawn(async move {
-            if let Err(e) = monitor(own, plugin, settings).await {
+            if let Err(e) = monitor(own, plugin, settings, apps).await {
                 warn!(error = %e, "can't watch this PC's notifications");
             }
         });
@@ -531,6 +532,7 @@ async fn monitor(
     own: String,
     plugin: Arc<NotificationPlugin>,
     settings: Settings,
+    apps: Arc<crate::notification_apps::AppFilter>,
 ) -> zbus::Result<()> {
     let conn = zbus::connection::Builder::session()?.build().await?;
     let rules = [
@@ -582,13 +584,18 @@ async fn monitor(
                 if skip {
                     continue;
                 }
+                let app = if app.is_empty() {
+                    "Linux".to_owned()
+                } else {
+                    app
+                };
+                // Remembered for the app list in the GTK app; skipped if switched off there.
+                if !apps.allows(&app) {
+                    continue;
+                }
                 let n = Notification {
                     id: String::new(),
-                    app: if app.is_empty() {
-                        "Linux".to_owned()
-                    } else {
-                        app
-                    },
+                    app,
                     title: summary,
                     text: strip_markup(&body),
                     time: now_ms(),
