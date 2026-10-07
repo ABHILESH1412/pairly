@@ -46,6 +46,13 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.3" date="2026-10-07">
+      <description>
+        <ul>
+          <li>[update] UI Changes. [feat] Added the global on/off button to start and stop the pairly service on both linux as well as android app</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-07">
       <description>
         <ul>
