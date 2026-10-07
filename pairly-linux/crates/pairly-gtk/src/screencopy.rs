@@ -164,7 +164,8 @@ impl Capture {
     /// Connect and capture the focused monitor (or the first one) once, to learn its format.
     pub fn open() -> Result<Self, String> {
         let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
-        let (globals, mut queue) = registry_queue_init::<State>(&conn).map_err(|e| e.to_string())?;
+        let (globals, mut queue) =
+            registry_queue_init::<State>(&conn).map_err(|e| e.to_string())?;
         let qh = queue.handle();
         let manager: ZwlrScreencopyManagerV1 = globals
             .bind(&qh, 3..=3, ())
@@ -176,17 +177,11 @@ impl Capture {
             list.iter()
                 .filter(|g| g.interface == "wl_output")
                 .enumerate()
-                .map(|(i, g)| {
-                    globals
-                        .registry()
-                        .bind(g.name, g.version.min(4), &qh, i)
-                })
+                .map(|(i, g)| globals.registry().bind(g.name, g.version.min(4), &qh, i))
                 .collect()
         });
         state.outputs = outputs.iter().map(|_| Output::default()).collect();
-        queue
-            .roundtrip(&mut state)
-            .map_err(|e| e.to_string())?;
+        queue.roundtrip(&mut state).map_err(|e| e.to_string())?;
         let wanted = focused_monitor();
         let index = wanted
             .and_then(|name| state.outputs.iter().position(|o| o.name == name))

@@ -12,6 +12,12 @@ pub struct DaemonIface {
     pub data_dir: std::path::PathBuf,
     pub cache_dir: std::path::PathBuf,
     pub notification_apps: std::sync::Arc<crate::notification_apps::AppFilter>,
+    /// The config file, where a new name is saved.
+    pub config_path: std::path::PathBuf,
+    /// Restart the daemon (to take a new name).
+    pub restart: std::sync::Arc<tokio::sync::Notify>,
+    /// Stop the daemon (Pairly turned off).
+    pub quit: std::sync::Arc<tokio::sync::Notify>,
 }
 
 fn parse_id(id: &str) -> fdo::Result<DeviceId> {
@@ -39,6 +45,36 @@ impl DaemonIface {
             self.node.device_id().to_string(),
             self.node.name().to_owned(),
         )
+    }
+
+    /// Stop the daemon: every device disconnects until it starts again. The app turns Pairly
+    /// off with this when systemd isn't managing the daemon.
+    async fn quit(&self) {
+        tracing::info!("quit requested over D-Bus");
+        self.quit.notify_one();
+    }
+
+    /// Rename this PC: saved in the config file, then the daemon restarts to announce it.
+    /// Paired devices see the new name when they reconnect (a few seconds).
+    async fn set_name(&self, name: &str) -> fdo::Result<()> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > pairly_core::Identity::MAX_NAME_CHARS {
+            return Err(fdo::Error::InvalidArgs(
+                "the name must be 1 to 64 characters".into(),
+            ));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(fdo::Error::InvalidArgs(
+                "the name can't contain control characters".into(),
+            ));
+        }
+        if name == self.node.name() {
+            return Ok(());
+        }
+        crate::config::save_name(&self.config_path, name).map_err(|e| failed(format!("{e:#}")))?;
+        tracing::info!(name, "renamed: restarting");
+        self.restart.notify_one();
+        Ok(())
     }
 
     async fn list_devices(&self) -> fdo::Result<Vec<Device>> {

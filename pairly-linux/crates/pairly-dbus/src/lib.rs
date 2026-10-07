@@ -172,6 +172,10 @@ pub struct Command {
 pub trait Daemon {
     /// This device's `(id, name)`.
     fn get_identity(&self) -> zbus::Result<(String, String)>;
+    /// Rename this PC (1-64 characters). The daemon restarts to announce the new name.
+    fn set_name(&self, name: &str) -> zbus::Result<()>;
+    /// Stop the daemon (every device disconnects).
+    fn quit(&self) -> zbus::Result<()>;
     fn list_devices(&self) -> zbus::Result<Vec<Device>>;
     /// Start pairing; answer the resulting `PairingRequested` with `ConfirmPair`.
     fn request_pair(&self, id: &str) -> zbus::Result<()>;

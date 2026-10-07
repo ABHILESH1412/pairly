@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent {
-            PairlyTheme {
+            PairlyTheme(systemBars = true) {
                 HomeRoute()
             }
         }

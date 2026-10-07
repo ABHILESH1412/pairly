@@ -97,8 +97,19 @@ class PairlyService : Service() {
     }
 
     companion object {
+        /** Start the service (and the node), unless Pairly is switched off. */
         fun start(context: Context) {
+            if (!AppSettings.enabled.value) return
             ContextCompat.startForegroundService(context, Intent(context, PairlyService::class.java))
+        }
+
+        /**
+         * Switch Pairly on or off. Off stops the service, its notification and every connection,
+         * and it stays off (the app won't start it) until switched back on.
+         */
+        fun setEnabled(context: Context, on: Boolean) {
+            AppSettings.setEnabled(context, on)
+            if (on) start(context) else context.stopService(Intent(context, PairlyService::class.java))
         }
     }
 }

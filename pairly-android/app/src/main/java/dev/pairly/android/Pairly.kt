@@ -187,25 +187,46 @@ object Pairly {
 
     /** Stop the node (the service is going away). */
     fun stop() {
+        scope.launch { lifecycle.withLock { stopLocked() } }
+    }
+
+    /**
+     * Rename this phone (null or blank: back to the phone's own name). The node restarts to
+     * announce it; paired devices see the new name when they reconnect, a few seconds later.
+     */
+    fun rename(name: String?) {
+        val context = appContext
+        AppSettings.setDeviceName(context, name?.filterNot(Char::isISOControl)?.take(64))
         scope.launch {
-            lifecycle.withLock {
-                val stopping = node ?: return@withLock
-                node = null
-                PairlyBluetooth.stopServer()
-                PhoneMedia.stop()
-                withContext(Dispatchers.Main) {
-                    Calls.stop()
-                    Sms.stop(appContext)
-                }
-                PcPlayers.clear(appContext)
-                PhoneNotifications.sink = null
-                stopping.shutdown()
-                stopping.close()
-                _state.value = UiState()
-                _pairing.value = null
-                _transfers.value = emptyMap()
-            }
+            lifecycle.withLock { stopLocked() }
+            start(context)
         }
+    }
+
+    /** This phone's own name (what it's called when no name was chosen in Settings). */
+    fun systemDeviceName(context: Context): String {
+        val name = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
+            ?.takeIf { it.isNotBlank() }
+            ?: "${Build.MANUFACTURER} ${Build.MODEL}"
+        return name.filterNot(Char::isISOControl).take(64)
+    }
+
+    private suspend fun stopLocked() {
+        val stopping = node ?: return
+        node = null
+        PairlyBluetooth.stopServer()
+        PhoneMedia.stop()
+        withContext(Dispatchers.Main) {
+            Calls.stop()
+            Sms.stop(appContext)
+        }
+        PcPlayers.clear(appContext)
+        PhoneNotifications.sink = null
+        stopping.shutdown()
+        stopping.close()
+        _state.value = UiState()
+        _pairing.value = null
+        _transfers.value = emptyMap()
     }
 
     /**
@@ -621,12 +642,8 @@ object Pairly {
         else -> message ?: javaClass.simpleName
     }
 
-    private fun deviceName(context: Context): String {
-        val name = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
-            ?.takeIf { it.isNotBlank() }
-            ?: "${Build.MANUFACTURER} ${Build.MODEL}"
-        return name.filterNot(Char::isISOControl).take(64)
-    }
+    private fun deviceName(context: Context): String =
+        AppSettings.deviceName(context)?.filterNot(Char::isISOControl)?.take(64) ?: systemDeviceName(context)
 
     private fun deviceKind(context: Context): DeviceKind =
         if (context.resources.configuration.smallestScreenWidthDp >= 600) DeviceKind.TABLET else DeviceKind.PHONE

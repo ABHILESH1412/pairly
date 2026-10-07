@@ -22,6 +22,7 @@ mod reply;
 mod screen;
 mod screencopy;
 mod send;
+mod settings;
 
 use std::collections::HashMap;
 

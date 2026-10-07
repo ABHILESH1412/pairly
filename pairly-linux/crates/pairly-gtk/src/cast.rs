@@ -108,7 +108,10 @@ fn direct(mut capture: crate::screencopy::Capture) {
         if let Err(e) = capture.grab(&mut pixels) {
             stop(&e);
         }
-        if src.push_buffer(gstreamer::Buffer::from_mut_slice(pixels)).is_err() {
+        if src
+            .push_buffer(gstreamer::Buffer::from_mut_slice(pixels))
+            .is_err()
+        {
             stop("the screen recording stopped");
         }
         if let Some(rest) = frame_time.checked_sub(begun.elapsed()) {
@@ -236,13 +239,7 @@ fn launch(description: &str) -> Result<gstreamer::Pipeline, String> {
 }
 
 /// Say the stream started, then send each encoded frame.
-fn attach(
-    pipeline: &gstreamer::Pipeline,
-    w: u32,
-    h: u32,
-    position: (i32, i32),
-    size: (i32, i32),
-) {
+fn attach(pipeline: &gstreamer::Pipeline, w: u32, h: u32, position: (i32, i32), size: (i32, i32)) {
     let Some(sink) = pipeline
         .by_name("out")
         .and_then(|e| e.downcast::<gstreamer_app::AppSink>().ok())

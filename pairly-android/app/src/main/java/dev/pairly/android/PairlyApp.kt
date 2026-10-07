@@ -13,11 +13,13 @@ class PairlyApp : Application() {
         Thread {
             for (name in PREFERENCE_FILES) getSharedPreferences(name, MODE_PRIVATE).all
         }.start()
+        // Tiny, and needed before the first frame (light or dark).
+        AppSettings.load(this)
         Notifications.createChannels(this)
     }
 
     private companion object {
-        val PREFERENCE_FILES = listOf("share", "clipboard", "notifications")
+        val PREFERENCE_FILES = listOf("share", "clipboard", "notifications", "app")
     }
 
     /**

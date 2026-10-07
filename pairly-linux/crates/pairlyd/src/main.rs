@@ -226,6 +226,8 @@ async fn main() -> Result<()> {
     let events = node.subscribe();
 
     let notification_apps = Arc::new(notification_apps::AppFilter::load(&config.data_dir));
+    let restart = Arc::new(Notify::new());
+    let quit = Arc::new(Notify::new());
     let conn = zbus::connection::Builder::session()?
         .serve_at(
             pairly_dbus::OBJECT_PATH,
@@ -236,6 +238,9 @@ async fn main() -> Result<()> {
                 data_dir: config.data_dir.clone(),
                 cache_dir: cache_dir.clone(),
                 notification_apps: notification_apps.clone(),
+                config_path: config::file_path(args.config.as_deref()),
+                restart: restart.clone(),
+                quit: quit.clone(),
             },
         )?
         .name(config.bus_name.as_str())?
@@ -249,7 +254,6 @@ async fn main() -> Result<()> {
         })?;
     info!(id = %node.device_id(), "ready");
 
-    let quit = Arc::new(Notify::new());
     let tray = if config.tray {
         PairlyTray::new(node.clone(), features.clone(), quit.clone())
             .spawn()
@@ -304,12 +308,39 @@ async fn main() -> Result<()> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
-        () = quit.notified() => info!("quit from the tray"),
+        () = quit.notified() => info!("quitting (tray or app)"),
+        () = restart.notified() => {
+            // Let the D-Bus reply go out first.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            forward.abort();
+            node.shutdown().await;
+            drop(conn);
+            return Err(restart_self());
+        }
     }
     info!("shutting down");
     forward.abort();
     node.shutdown().await;
     Ok(())
+}
+
+/// Start this program again in place (same process id, so systemd keeps tracking it), to
+/// take a changed config. Returns only if that failed.
+fn restart_self() -> anyhow::Error {
+    use std::os::unix::process::CommandExt;
+    let mut args = std::env::args_os();
+    let program = args.next().filter(|p| PathBuf::from(p).is_absolute());
+    let program = match program
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+    {
+        Some(p) => p,
+        None => return anyhow::anyhow!("can't find this program to restart it"),
+    };
+    info!(program = %program.display(), "restarting");
+    // The D-Bus connection and sockets are close-on-exec, so the bus name is free again.
+    let e = std::process::Command::new(&program).args(args).exec();
+    anyhow::Error::new(e).context("restarting")
 }
 
 /// Turn node and platform events into D-Bus signals and desktop notifications.

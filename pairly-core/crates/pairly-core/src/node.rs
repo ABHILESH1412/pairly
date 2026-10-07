@@ -755,6 +755,10 @@ impl Inner {
         if let Some(peer) = self.lock().peers.get_mut(&id) {
             peer.identity = Some(Arc::new(identity.clone()));
         }
+        // The peer may have been renamed since it was paired.
+        if let Err(e) = self.registry.set_name(&id, &identity.name) {
+            debug!(%id, error = %e, "can't store the peer's name");
+        }
         if let Err(e) = self.registry.set_relay(&id, identity.relay.as_deref()) {
             debug!(%id, error = %e, "can't store the peer's relay");
         }

@@ -1,4 +1,4 @@
-//! The main window: a sidebar of devices and a page for the selected one. All state comes from
+//! The main window: a sidebar of devices (which can be hidden) and a page for the selected one. All state comes from
 //! `pairlyd` over D-Bus; the UI never talks to the network itself.
 //!
 //! relm4 drives the message loop and runs async D-Bus work as commands on its Tokio runtime.
@@ -17,6 +17,8 @@ const APP_TITLE: &str = "Pairly";
 
 #[derive(Debug, Clone)]
 enum Status {
+    /// Switched off by the user.
+    Off,
     Connecting,
     Ready,
     Unavailable(String),
@@ -41,6 +43,8 @@ pub struct App {
     transfers: BTreeMap<u64, Transfer>,
     /// Media players on each device.
     players: HashMap<String, Vec<Player>>,
+    /// Pairly is switched off.
+    off: bool,
 }
 
 #[derive(Debug)]
@@ -78,6 +82,10 @@ pub enum Input {
     /// Control a device's player: (device, player, action).
     Media(String, String, &'static str),
     Unpair(String),
+    OpenSettings,
+    About,
+    /// Switch Pairly on or off.
+    SetOn(bool),
     ShowQr,
     QrClosed,
     RefreshQr,
@@ -114,14 +122,18 @@ pub enum Cmd {
 
 pub struct Widgets {
     toasts: adw::ToastOverlay,
-    split: adw::NavigationSplitView,
+    split: adw::OverlaySplitView,
     title: adw::WindowTitle,
     list: gtk::ListBox,
-    content_page: adw::NavigationPage,
+    /// The content's header: the device's name.
+    content_title: adw::WindowTitle,
     content: gtk::Stack,
     device_slot: adw::Bin,
     status_page: adw::StatusPage,
     retry: gtk::Button,
+    turn_on: gtk::Button,
+    power: gtk::Switch,
+    power_label: gtk::Label,
     qr_picture: gtk::Picture,
     /// Rows of the transfers on the current device page, updated in place as bytes arrive.
     transfer_rows: HashMap<u64, (adw::ActionRow, gtk::ProgressBar)>,
@@ -252,6 +264,10 @@ impl App {
 /// follows the well-known name, so a restarted daemon is picked up without reconnecting.
 async fn watch_daemon(out: Sender<Cmd>) {
     loop {
+        if crate::settings::is_off() {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
         match connect().await {
             Ok((daemon, me)) => {
                 let _ = out.send(Cmd::Connected(daemon.clone(), me));
@@ -336,6 +352,10 @@ impl Component for App {
             move |_| window.present()
         });
 
+        let prefs = crate::settings::Prefs::load();
+        prefs.theme.apply();
+        crate::settings::set_off(prefs.off);
+
         // Sidebar: device list.
         let title = adw::WindowTitle::new(APP_TITLE, "");
         let pair_button = gtk::Button::builder()
@@ -346,27 +366,25 @@ impl Component for App {
             let sender = sender.clone();
             move |_| sender.input(Input::ShowQr)
         });
+        let menu = gtk::gio::Menu::new();
+        let section = gtk::gio::Menu::new();
+        section.append(Some("Settings"), Some("app.settings"));
+        section.append(Some("Commands"), Some("app.commands"));
+        section.append(Some("PC Notifications"), Some("app.notification-apps"));
+        menu.append_section(None, &section);
+        let section = gtk::gio::Menu::new();
+        section.append(Some("About Pairly"), Some("app.about"));
+        menu.append_section(None, &section);
+        let menu_button = gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .tooltip_text("Main Menu")
+            .menu_model(&menu)
+            .primary(true)
+            .build();
         let sidebar_header = adw::HeaderBar::new();
         sidebar_header.set_title_widget(Some(&title));
-        sidebar_header.pack_end(&pair_button);
-        let commands_button = gtk::Button::builder()
-            .icon_name("utilities-terminal-symbolic")
-            .tooltip_text("Commands Your Phone Can Run")
-            .build();
-        commands_button.connect_clicked({
-            let sender = sender.clone();
-            move |_| sender.input(Input::OpenCommands)
-        });
-        sidebar_header.pack_start(&commands_button);
-        let notifications_button = gtk::Button::builder()
-            .icon_name("preferences-system-notifications-symbolic")
-            .tooltip_text("Which PC Notifications Go to Your Phone")
-            .build();
-        notifications_button.connect_clicked({
-            let sender = sender.clone();
-            move |_| sender.input(Input::OpenNotificationApps)
-        });
-        sidebar_header.pack_start(&notifications_button);
+        sidebar_header.pack_start(&pair_button);
+        sidebar_header.pack_end(&menu_button);
         let list = gtk::ListBox::new();
         list.add_css_class("navigation-sidebar");
         list.connect_row_activated({
@@ -386,7 +404,31 @@ impl Component for App {
                 .vexpand(true)
                 .build(),
         ));
-        let sidebar_page = adw::NavigationPage::new(&sidebar_view, APP_TITLE);
+        // The global switch: off stops Pairly entirely until it's switched back on.
+        let power_label = gtk::Label::builder().xalign(0.0).hexpand(true).build();
+        power_label.add_css_class("heading");
+        let power = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .tooltip_text("Turn Pairly on or off")
+            .active(!prefs.off)
+            .build();
+        power.connect_state_set({
+            let sender = sender.clone();
+            move |_, on| {
+                sender.input(Input::SetOn(on));
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        let power_bar = gtk::Box::builder()
+            .spacing(12)
+            .margin_top(10)
+            .margin_bottom(10)
+            .margin_start(16)
+            .margin_end(16)
+            .build();
+        power_bar.append(&power_label);
+        power_bar.append(&power);
+        sidebar_view.add_bottom_bar(&power_bar);
 
         // Content: a status page or the selected device.
         let status_page = adw::StatusPage::new();
@@ -400,30 +442,68 @@ impl Component for App {
             let sender = sender.clone();
             move |_| sender.input(Input::ShowQr)
         });
-        status_page.set_child(Some(&retry));
+        let turn_on = gtk::Button::builder()
+            .label("Turn On")
+            .halign(gtk::Align::Center)
+            .build();
+        turn_on.add_css_class("pill");
+        turn_on.add_css_class("suggested-action");
+        turn_on.connect_clicked({
+            let sender = sender.clone();
+            move |_| sender.input(Input::SetOn(true))
+        });
+        let status_buttons = gtk::Box::builder().halign(gtk::Align::Center).build();
+        status_buttons.append(&retry);
+        status_buttons.append(&turn_on);
+        status_page.set_child(Some(&status_buttons));
         let device_slot = adw::Bin::new();
+        device_slot.add_css_class("drop-zone");
         device_slot.add_controller(file_drop_target({
             let sender = sender.clone();
             move |paths| sender.input(Input::DropFiles(paths))
         }));
-        let content = gtk::Stack::new();
+        let content = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
         content.add_named(&status_page, Some("status"));
         content.add_named(&device_slot, Some("device"));
-        let content_view = adw::ToolbarView::new();
-        content_view.add_top_bar(&adw::HeaderBar::new());
-        content_view.set_content(Some(&content));
-        let content_page = adw::NavigationPage::new(&content_view, APP_TITLE);
-
-        let split = adw::NavigationSplitView::builder()
+        let split = adw::OverlaySplitView::builder()
             .min_sidebar_width(280.0)
             .max_sidebar_width(340.0)
+            .show_sidebar(prefs.sidebar)
             .build();
-        split.set_sidebar(Some(&sidebar_page));
-        split.set_content(Some(&content_page));
+        // Shows and hides the device list (F9, as in other GNOME apps).
+        let sidebar_toggle = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Show or Hide the Device List (F9)")
+            .build();
+        split
+            .bind_property("show-sidebar", &sidebar_toggle, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        split.connect_show_sidebar_notify(|split| {
+            // Only a choice made on a wide window is remembered; narrow ones hide it anyway.
+            if !split.is_collapsed() {
+                let mut prefs = crate::settings::Prefs::load();
+                prefs.sidebar = split.shows_sidebar();
+                prefs.save();
+            }
+        });
+        let content_title = adw::WindowTitle::new(APP_TITLE, "");
+        let content_header = adw::HeaderBar::new();
+        content_header.set_title_widget(Some(&content_title));
+        content_header.pack_start(&sidebar_toggle);
+        let content_view = adw::ToolbarView::new();
+        content_view.add_top_bar(&content_header);
+        content_view.set_content(Some(&content));
+        split.set_sidebar(Some(&sidebar_view));
+        split.set_content(Some(&content_view));
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&split));
         window.set_content(Some(&toasts));
 
+        // Narrow windows: the list slides over the page instead of sitting beside it.
         let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
             adw::BreakpointConditionLengthType::MaxWidth,
             600.0,
@@ -452,7 +532,26 @@ impl Component for App {
             move |_, _| window.close()
         });
         app.add_action(&quit_action);
+        let toggle_sidebar = gtk::gio::SimpleAction::new("toggle-sidebar", None);
+        toggle_sidebar.connect_activate({
+            let split = split.clone();
+            move |_, _| split.set_show_sidebar(!split.shows_sidebar())
+        });
+        app.add_action(&toggle_sidebar);
+        for (name, input) in [
+            ("settings", (|| Input::OpenSettings) as fn() -> Input),
+            ("commands", || Input::OpenCommands),
+            ("notification-apps", || Input::OpenNotificationApps),
+            ("about", || Input::About),
+        ] {
+            let action = gtk::gio::SimpleAction::new(name, None);
+            let sender = sender.clone();
+            action.connect_activate(move |_, _| sender.input(input()));
+            app.add_action(&action);
+        }
         app.set_accels_for_action("app.quit", &["<Control>q"]);
+        app.set_accels_for_action("app.settings", &["<Control>comma"]);
+        app.set_accels_for_action("app.toggle-sidebar", &["F9"]);
         app.set_accels_for_action("window.close", &["<Control>w"]);
 
         sender.command(|out, shutdown| shutdown.register(watch_daemon(out)).drop_on_shutdown());
@@ -460,7 +559,11 @@ impl Component for App {
         let model = App {
             daemon: None,
             show_pairing_when_ready: init.show_pairing,
-            status: Status::Connecting,
+            status: if prefs.off {
+                Status::Off
+            } else {
+                Status::Connecting
+            },
             me: None,
             devices: Vec::new(),
             selected: None,
@@ -468,17 +571,21 @@ impl Component for App {
             ringing: std::collections::HashSet::new(),
             transfers: BTreeMap::new(),
             players: HashMap::new(),
+            off: prefs.off,
         };
         let mut widgets = Widgets {
             toasts,
             split,
             title,
             list,
-            content_page,
+            content_title,
             content,
             device_slot,
             status_page,
             retry,
+            turn_on,
+            power,
+            power_label,
             qr_picture,
             transfer_rows: HashMap::new(),
         };
@@ -497,7 +604,10 @@ impl Component for App {
             Input::Select(id) => {
                 self.refresh_players(&sender, id.clone());
                 self.selected = Some(id);
-                widgets.split.set_show_content(true);
+                // On a narrow window the list covers the page: get it out of the way.
+                if widgets.split.is_collapsed() {
+                    widgets.split.set_show_sidebar(false);
+                }
             }
             Input::Pair(id) => {
                 self.call(&sender, move |d| async move { d.request_pair(&id).await })
@@ -655,6 +765,49 @@ impl Component for App {
                 }
                 return;
             }
+            Input::OpenSettings => {
+                let (commands, apps) = (sender.clone(), sender.clone());
+                crate::settings::open(
+                    window,
+                    self.daemon.clone(),
+                    self.me.clone(),
+                    move || commands.input(Input::OpenCommands),
+                    move || apps.input(Input::OpenNotificationApps),
+                );
+                return;
+            }
+            Input::SetOn(on) => {
+                if on != self.off {
+                    return; // already so (the switch echoing a change made here)
+                }
+                self.off = !on;
+                crate::settings::set_off(self.off);
+                let mut prefs = crate::settings::Prefs::load();
+                prefs.off = self.off;
+                prefs.save();
+                let daemon = self.daemon.clone();
+                if self.off {
+                    self.daemon = None;
+                    self.status = Status::Off;
+                    self.devices.clear();
+                    self.selected = None;
+                } else {
+                    self.status = Status::Connecting;
+                }
+                sender.oneshot_command(async move {
+                    if crate::settings::switch_service(on).await.is_err() && !on {
+                        // Not run by systemd: stop it directly (it starts on demand later).
+                        if let Some(daemon) = daemon {
+                            let _ = daemon.quit().await;
+                        }
+                    }
+                    Cmd::Done
+                });
+            }
+            Input::About => {
+                crate::settings::about_dialog().present(Some(window));
+                return;
+            }
             Input::Media(device, player, action) => {
                 self.call(&sender, move |d| async move {
                     d.media_control(&device, &player, action, 0).await
@@ -706,6 +859,7 @@ impl Component for App {
         window: &Self::Root,
     ) {
         match message {
+            Cmd::Connected(..) | Cmd::Unavailable(_) if self.off => return,
             Cmd::Connected(daemon, me) => {
                 self.daemon = Some(daemon);
                 self.me = Some(me);
@@ -828,6 +982,12 @@ impl Component for App {
 
 impl App {
     fn render(&self, w: &mut Widgets, sender: &ComponentSender<Self>) {
+        w.power.set_active(!self.off);
+        w.power_label.set_label(if self.off {
+            "Pairly is off"
+        } else {
+            "Pairly is on"
+        });
         w.title
             .set_subtitle(self.me.as_ref().map_or("", |(_, name)| name.as_str()));
 
@@ -855,7 +1015,8 @@ impl App {
         let selected = self.selected.as_deref().and_then(|id| self.device(id));
         match (&self.status, selected) {
             (Status::Ready, Some(device)) => {
-                w.content_page.set_title(&device.name);
+                w.content_title.set_title(&device.name);
+                w.content_title.set_subtitle("");
                 let ringing = self.ringing.contains(&device.id);
                 let transfers: Vec<&Transfer> = self
                     .transfers
@@ -875,8 +1036,15 @@ impl App {
                 w.content.set_visible_child_name("device");
             }
             (status, _) => {
-                w.content_page.set_title(APP_TITLE);
+                w.content_title.set_title(APP_TITLE);
+                w.content_title.set_subtitle("");
                 let (icon, title, body, show_button) = match status {
+                    Status::Off => (
+                        "system-shutdown-symbolic",
+                        "Pairly Is Off",
+                        "Your devices can't reach this PC and nothing is shared. Turn it on when you need it.".to_owned(),
+                        false,
+                    ),
                     Status::Connecting => (
                         "content-loading-symbolic",
                         "Connecting…",
@@ -905,6 +1073,7 @@ impl App {
                 w.status_page.set_title(title);
                 w.status_page.set_description(Some(&body));
                 w.retry.set_visible(show_button);
+                w.turn_on.set_visible(matches!(status, Status::Off));
                 w.content.set_visible_child_name("status");
             }
         }
@@ -929,7 +1098,9 @@ fn section_header(text: &str) -> gtk::ListBoxRow {
 
 fn device_row(d: &Device, sender: &ComponentSender<App>) -> gtk::ListBoxRow {
     let icon = gtk::Image::from_icon_name(icon_for(&d.device_type));
-    icon.set_pixel_size(24);
+    icon.set_pixel_size(18);
+    icon.set_valign(gtk::Align::Center);
+    icon.add_css_class("row-avatar");
     let name = gtk::Label::builder()
         .label(&d.name)
         .xalign(0.0)
@@ -1045,87 +1216,95 @@ fn device_page(
     rows: &mut HashMap<u64, (adw::ActionRow, gtk::ProgressBar)>,
     sender: &ComponentSender<App>,
 ) -> gtk::Widget {
-    let page = adw::PreferencesPage::new();
-
-    let icon = gtk::Image::from_icon_name(icon_for(&d.device_type));
-    icon.set_pixel_size(72);
-    icon.add_css_class("dim-label");
-    let name = gtk::Label::new(Some(&d.name));
-    name.add_css_class("title-1");
-    let status = status_pill(d, false);
-    status.set_halign(gtk::Align::Center);
-    let header = gtk::Box::builder()
+    let page = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(8)
-        .margin_bottom(12)
+        .spacing(24)
+        .margin_top(24)
+        .margin_bottom(32)
+        .margin_start(24)
+        .margin_end(24)
         .build();
-    header.append(&icon);
-    header.append(&name);
-    header.append(&status);
-    let header_group = adw::PreferencesGroup::new();
-    header_group.add(&header);
-    page.add(&header_group);
+    page.append(&banner(d));
 
-    let actions = adw::PreferencesGroup::new();
     if d.paired {
         let (on, id) = (d.is_connected(), d.id.clone());
-        let grid = gtk::FlowBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .homogeneous(true)
-            .min_children_per_line(2)
-            .max_children_per_line(4)
-            .column_spacing(12)
-            .row_spacing(12)
-            .build();
-        let add = |button: gtk::Button| {
-            grid.append(&button);
-            if let Some(child) = button.parent() {
-                child.set_focusable(false);
-            }
-        };
+        let phone = d.device_type == "phone";
         let with = |f: fn(String) -> Input| {
             let id = id.clone();
             move || f(id.clone())
         };
-        add(tile(
-            "document-send-symbolic",
-            "Send Files",
-            "Or drop them here",
-            on,
-            sender,
-            with(Input::PickFiles),
-        ));
-        add(tile(
-            "insert-link-symbolic",
-            "Link or Text",
-            "Opens or copies there",
-            on,
-            sender,
-            with(Input::AskText),
-        ));
-        add(tile(
-            "edit-paste-symbolic",
-            "Clipboard",
-            "Send what you copied",
-            on,
-            sender,
-            with(Input::SendClipboard),
-        ));
-        if d.device_type == "phone" {
-            add(tile(
+        let mut tiles = Vec::new();
+        if phone {
+            tiles.push(tile(
+                "phone-symbolic",
+                "Phone Screen",
+                "See and control it",
+                "purple",
+                on,
+                sender,
+                with(Input::ShowScreen),
+            ));
+            tiles.push(tile(
                 "mail-unread-symbolic",
                 "Messages",
                 "Read and send texts",
+                "teal",
                 on,
                 sender,
                 with(Input::OpenMessages),
             ));
+            tiles.push(tile(
+                "x-office-address-book-symbolic",
+                "Contacts & Calls",
+                "Call or text from here",
+                "coral",
+                on,
+                sender,
+                with(Input::OpenContacts),
+            ));
+            tiles.push(tile(
+                "folder-symbolic",
+                "Browse Files",
+                "The phone's storage",
+                "amber",
+                on,
+                sender,
+                with(Input::OpenFiles),
+            ));
         }
+        tiles.push(tile(
+            "document-send-symbolic",
+            "Send Files",
+            "Or drop them on this page",
+            "blue",
+            on,
+            sender,
+            with(Input::PickFiles),
+        ));
+        tiles.push(tile(
+            "insert-link-symbolic",
+            "Link or Text",
+            "Opens or copies there",
+            "blue",
+            on,
+            sender,
+            with(Input::AskText),
+        ));
+        tiles.push(tile(
+            "edit-paste-symbolic",
+            "Clipboard",
+            "Send what you copied",
+            "pink",
+            on,
+            sender,
+            with(Input::SendClipboard),
+        ));
         let ring = if ringing {
             tile(
                 "find-location-symbolic",
                 "Stop Ringing",
                 "Ringing now…",
+                "red",
                 on,
                 sender,
                 with(|id| Input::Ring(id, false)),
@@ -1133,82 +1312,78 @@ fn device_page(
         } else {
             tile(
                 "find-location-symbolic",
-                "Find My Phone",
-                "Ring it, even on silent",
+                if phone { "Find My Phone" } else { "Ring It" },
+                "Rings, even on silent",
+                "green",
                 on,
                 sender,
                 with(|id| Input::Ring(id, true)),
             )
         };
-        if ringing {
-            ring.add_css_class("ringing");
-        }
-        add(ring);
-        add(tile(
+        tiles.push(ring);
+        tiles.push(tile(
             "preferences-system-notifications-symbolic",
             "Ping",
             "Show a notification",
+            "green",
             on,
             sender,
             with(Input::Ping),
         ));
-        if d.device_type == "phone" {
-            add(tile(
-                "phone-symbolic",
-                "Phone Screen",
-                "See and control it (same Wi-Fi)",
-                on,
-                sender,
-                with(Input::ShowScreen),
-            ));
-            add(tile(
-                "folder-symbolic",
-                "Browse Files",
-                "The phone's storage",
-                on,
-                sender,
-                with(Input::OpenFiles),
-            ));
-            add(tile(
-                "x-office-address-book-symbolic",
-                "Contacts & Calls",
-                "Call or text from here",
-                on,
-                sender,
-                with(Input::OpenContacts),
-            ));
-            add(tile(
+        if phone {
+            tiles.push(tile(
                 "system-lock-screen-symbolic",
                 "Lock Phone",
                 "Lock its screen now",
+                "gray",
                 on,
                 sender,
                 with(|id| Input::Power(id, "lock")),
             ));
-            add(tile(
+            tiles.push(tile(
                 "system-shutdown-symbolic",
                 "Power Off",
                 "Power off or restart",
+                "red",
                 on,
                 sender,
                 with(Input::AskPower),
             ));
         }
-        add(tile(
+        tiles.push(tile(
             "utilities-terminal-symbolic",
             "Commands",
             "What it may run here",
+            "gray",
             true,
             sender,
             || Input::OpenCommands,
         ));
-        actions.add(&grid);
+
+        // 2 tiles a row on narrow windows, up to 6 on wide ones.
+        let grid = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .homogeneous(true)
+            .min_children_per_line(2)
+            .max_children_per_line(6)
+            .column_spacing(12)
+            .row_spacing(12)
+            .build();
+        for button in tiles {
+            grid.append(&button);
+            if let Some(child) = button.parent() {
+                child.set_focusable(false);
+            }
+        }
+        page.append(&grid);
     } else {
+        let actions = adw::PreferencesGroup::new();
         let pair_button = gtk::Button::builder()
             .label("Pair")
             .valign(gtk::Align::Center)
             .build();
         pair_button.add_css_class("suggested-action");
+        pair_button.add_css_class("pill");
         pair_button.connect_clicked({
             let (sender, id) = (sender.clone(), d.id.clone());
             move |_| sender.input(Input::Pair(id.clone()))
@@ -1219,13 +1394,13 @@ fn device_page(
             .build();
         pair.add_suffix(&pair_button);
         actions.add(&pair);
+        page.append(&actions);
     }
-    page.add(&actions);
 
     if let Some(p) = players.iter().find(|p| p.playing).or(players.first())
         && d.is_connected()
     {
-        page.add(&now_playing(&d.id, p, sender));
+        page.append(&now_playing(&d.id, p, sender));
     }
 
     if !transfers.is_empty() {
@@ -1235,23 +1410,10 @@ fn device_page(
             rows.insert(t.id, (row.clone(), bar));
             group.add(&row);
         }
-        page.add(&group);
+        page.append(&group);
     }
 
     let details = adw::PreferencesGroup::builder().title("Details").build();
-    if d.battery >= 0 {
-        let level = if d.charging {
-            format!("{}% · charging", d.battery)
-        } else {
-            format!("{}%", d.battery)
-        };
-        let battery = adw::ActionRow::builder()
-            .title("Battery")
-            .subtitle(level)
-            .build();
-        battery.add_css_class("property");
-        details.add(&battery);
-    }
     let id_row = adw::ActionRow::builder()
         .title("Device ID")
         .subtitle(&d.id)
@@ -1259,7 +1421,7 @@ fn device_page(
         .build();
     id_row.add_css_class("property");
     details.add(&id_row);
-    page.add(&details);
+    page.append(&details);
 
     if d.paired {
         let danger = adw::PreferencesGroup::new();
@@ -1283,45 +1445,219 @@ fn device_page(
             }
         });
         danger.add(&unpair);
-        page.add(&danger);
+        page.append(&danger);
     }
-    page.upcast()
+
+    // Wide windows fit more tiles per row; very wide ones stop growing.
+    let clamp = adw::Clamp::builder()
+        .maximum_size(1280)
+        .tightening_threshold(900)
+        .child(&page)
+        .build();
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&clamp)
+        .build()
+        .upcast()
 }
 
-/// One action in the device page's grid: an icon, a name and a hint.
+/// The top of a device page: a drawn phone (or laptop) showing its battery, the name, and tags
+/// for the connection, on a soft lavender banner.
+fn banner(d: &Device) -> gtk::Box {
+    let name = gtk::Label::builder()
+        .label(&d.name)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    name.add_css_class("title-1");
+    let tags = gtk::Box::builder().spacing(6).build();
+    let tag = |text: &str, kind: &str| {
+        let label = gtk::Label::builder()
+            .label(text)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        label.add_css_class("tag");
+        label.add_css_class(kind);
+        tags.append(&label);
+    };
+    match (d.paired, d.is_connected()) {
+        (false, _) => tag("Not paired", "info"),
+        (true, false) => tag("● Offline", "offline"),
+        (true, true) => {
+            tag("● Connected", "connected");
+            let link = if d.rtt_ms > 0 {
+                format!("{} · {} ms", link_name(&d.link), d.rtt_ms)
+            } else {
+                link_name(&d.link).to_owned()
+            };
+            tag(&link, "info");
+        }
+    }
+    if d.battery >= 0 && d.charging {
+        tag("Charging", "connected");
+    } else if (0..=15).contains(&d.battery) {
+        tag("Battery low", "offline");
+    }
+    let text = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(10)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .build();
+    text.append(&name);
+    text.append(&tags);
+
+    let banner = gtk::Box::builder().spacing(24).build();
+    banner.add_css_class("device-banner");
+    banner.append(&device_art(&d.device_type, d.battery, d.charging));
+    banner.append(&text);
+    banner
+}
+
+/// A drawn phone or laptop with the battery level on its screen.
+fn device_art(device_type: &str, battery: i32, charging: bool) -> gtk::Overlay {
+    let laptop = !matches!(device_type, "phone" | "tablet");
+    let (w, h) = if laptop { (96, 66) } else { (52, 88) };
+    let art = gtk::DrawingArea::builder()
+        .content_width(w)
+        .content_height(h)
+        .build();
+    art.add_css_class("device-art");
+    let level = (battery >= 0).then(|| f64::from(battery.clamp(0, 100)) / 100.0);
+    art.set_draw_func(move |area, cr, w, h| {
+        let c = area.color();
+        let ink = |alpha: f64| {
+            cr.set_source_rgba(
+                f64::from(c.red()),
+                f64::from(c.green()),
+                f64::from(c.blue()),
+                alpha,
+            );
+        };
+        let (w, h) = (f64::from(w), f64::from(h));
+        let rounded = |x: f64, y: f64, rw: f64, rh: f64, r: f64| {
+            cr.new_sub_path();
+            cr.arc(x + rw - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+            cr.arc(x + rw - r, y + rh - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+            cr.arc(
+                x + r,
+                y + rh - r,
+                r,
+                std::f64::consts::FRAC_PI_2,
+                std::f64::consts::PI,
+            );
+            cr.arc(
+                x + r,
+                y + r,
+                r,
+                std::f64::consts::PI,
+                1.5 * std::f64::consts::PI,
+            );
+            cr.close_path();
+        };
+        cr.set_line_width(2.5);
+        // The screen (and, for a laptop, its base).
+        let (sx, sy, sw, sh) = if laptop {
+            (8.0, 2.0, w - 16.0, h - 12.0)
+        } else {
+            (2.0, 2.0, w - 4.0, h - 4.0)
+        };
+        rounded(sx, sy, sw, sh, if laptop { 6.0 } else { 10.0 });
+        ink(0.10);
+        let _ = cr.fill_preserve();
+        ink(1.0);
+        let _ = cr.stroke();
+        if laptop {
+            rounded(1.0, h - 9.0, w - 2.0, 7.0, 3.5);
+            ink(1.0);
+            let _ = cr.fill();
+        } else {
+            // The earpiece.
+            rounded(w / 2.0 - 7.0, 7.0, 14.0, 3.0, 1.5);
+            ink(0.6);
+            let _ = cr.fill();
+        }
+        // A battery bar along the bottom of the screen.
+        if let Some(level) = level {
+            let (bx, by, bw) = (sx + 8.0, sy + sh - 11.0, sw - 16.0);
+            rounded(bx, by, bw, 5.0, 2.5);
+            ink(0.2);
+            let _ = cr.fill();
+            if level > 0.0 {
+                rounded(bx, by, (bw * level).max(5.0), 5.0, 2.5);
+                if charging {
+                    cr.set_source_rgb(0.23, 0.43, 0.07);
+                } else if level <= 0.15 {
+                    cr.set_source_rgb(0.64, 0.18, 0.18);
+                } else {
+                    ink(1.0);
+                }
+                let _ = cr.fill();
+            }
+        }
+    });
+    let overlay = gtk::Overlay::builder()
+        .child(&art)
+        .valign(gtk::Align::Center)
+        .build();
+    if battery >= 0 {
+        let label = gtk::Label::new(Some(&format!("{battery}%")));
+        label.add_css_class("device-art-level");
+        label.set_valign(gtk::Align::Center);
+        // Above the battery bar, in the screen's middle.
+        label.set_margin_bottom(if laptop { 12 } else { 6 });
+        overlay.add_overlay(&label);
+        overlay.set_tooltip_text(Some(&if charging {
+            format!("Battery {battery}% · charging")
+        } else {
+            format!("Battery {battery}%")
+        }));
+    }
+    overlay
+}
+
+/// One action: an icon, a name and a hint on a soft pastel card (`hue`: purple, teal, coral,
+/// amber, blue, pink, green, gray or red).
+#[allow(clippy::too_many_arguments)]
 fn tile(
     icon: &str,
     title: &str,
     hint: &str,
+    hue: &str,
     enabled: bool,
     sender: &ComponentSender<App>,
     msg: impl Fn() -> Input + 'static,
 ) -> gtk::Button {
     let image = gtk::Image::from_icon_name(icon);
-    image.set_pixel_size(32);
-    let name = gtk::Label::new(Some(title));
-    name.add_css_class("heading");
-    let hint = gtk::Label::builder()
-        .label(hint)
-        .wrap(true)
-        .justify(gtk::Justification::Center)
+    image.set_pixel_size(24);
+    image.set_halign(gtk::Align::Start);
+    let name = gtk::Label::builder()
+        .label(title)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
-    hint.add_css_class("caption");
-    hint.add_css_class("dim-label");
+    name.add_css_class("tile-title");
+    let hint_label = gtk::Label::builder()
+        .label(hint)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    hint_label.add_css_class("tile-hint");
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
+        .spacing(4)
         .valign(gtk::Align::Center)
         .build();
     content.append(&image);
     content.append(&name);
-    content.append(&hint);
+    content.append(&hint_label);
     let button = gtk::Button::builder()
         .child(&content)
         .sensitive(enabled)
+        .tooltip_text(hint)
         .build();
-    button.add_css_class("card");
-    button.add_css_class("action-tile");
+    button.add_css_class("tile");
+    button.add_css_class(&format!("hue-{hue}"));
     let sender = sender.clone();
     button.connect_clicked(move |_| sender.input(msg()));
     button
@@ -1363,6 +1699,8 @@ fn status_pill(d: &Device, short: bool) -> gtk::Box {
     pill
 }
 
+/// The pastel look: soft colour cards, each action in its own gentle colour, and a lavender
+/// banner with a drawn device. Shapes and spacing here; colours in [`LIGHT`] and [`DARK`].
 const CSS: &str = "
 .status-pill { padding: 4px 12px; border-radius: 999px; font-weight: bold; font-size: smaller; }
 .status-pill .status-dot { min-width: 8px; min-height: 8px; border-radius: 999px; }
@@ -1373,20 +1711,102 @@ const CSS: &str = "
 .status-pill.available { background: alpha(@accent_color, 0.15); color: @accent_color; }
 .status-pill.available .status-dot { background: @accent_color; }
 .status-pill.compact { padding: 2px 8px; }
-.action-tile { padding: 18px 8px; min-height: 110px; }
-.action-tile.ringing { background: alpha(@error_color, 0.18); }
+.device-banner { border-radius: 26px; padding: 22px 28px; }
+.device-art-level { font-weight: bold; font-size: 13px; }
+.tag { border-radius: 999px; padding: 3px 10px; font-size: smaller; font-weight: bold; }
+.row-avatar { min-width: 36px; min-height: 36px; border-radius: 999px; }
+button.tile { border-radius: 20px; padding: 16px; min-height: 96px; min-width: 150px; box-shadow: none; transition: filter 150ms ease; }
+button.tile:disabled { opacity: 0.45; }
+.tile-title { font-weight: bold; }
+.tile-hint { font-size: smaller; }
+.drop-zone:drop(active) { outline: 2px dashed @accent_color; outline-offset: -10px; border-radius: 26px; }
+";
+
+/// Colours for the light look.
+const LIGHT: &str = "
+.device-banner { background-color: #EEEDFE; color: #26215C; }
+.device-art { color: #3C3489; }
+.tag { background-color: rgba(255,255,255,0.85); }
+.tag.connected { color: #27500A; }
+.tag.info { color: #3C3489; }
+.tag.offline { color: #A32D2D; }
+.row-avatar { background-color: #EEEDFE; color: #3C3489; }
+button.tile:hover { filter: brightness(0.96); }
+button.tile:active { filter: brightness(0.92); }
+button.tile.hue-purple { background-color: #EEEDFE; color: #3C3489; }
+button.tile.hue-purple .tile-hint { color: #534AB7; }
+button.tile.hue-teal { background-color: #E1F5EE; color: #085041; }
+button.tile.hue-teal .tile-hint { color: #0F6E56; }
+button.tile.hue-coral { background-color: #FAECE7; color: #712B13; }
+button.tile.hue-coral .tile-hint { color: #993C1D; }
+button.tile.hue-amber { background-color: #FAEEDA; color: #633806; }
+button.tile.hue-amber .tile-hint { color: #854F0B; }
+button.tile.hue-blue { background-color: #E6F1FB; color: #0C447C; }
+button.tile.hue-blue .tile-hint { color: #185FA5; }
+button.tile.hue-pink { background-color: #FBEAF0; color: #72243E; }
+button.tile.hue-pink .tile-hint { color: #993556; }
+button.tile.hue-green { background-color: #EAF3DE; color: #27500A; }
+button.tile.hue-green .tile-hint { color: #3B6D11; }
+button.tile.hue-gray { background-color: #F1EFE8; color: #444441; }
+button.tile.hue-gray .tile-hint { color: #5F5E5A; }
+button.tile.hue-red { background-color: #FCEBEB; color: #791F1F; }
+button.tile.hue-red .tile-hint { color: #A32D2D; }
+";
+
+/// Colours for the dark look (deep versions of the same hues, light text).
+const DARK: &str = "
+.device-banner { background-color: #3C3489; color: #EEEDFE; }
+.device-art { color: #CECBF6; }
+.tag { background-color: rgba(0,0,0,0.28); }
+.tag.connected { color: #C0DD97; }
+.tag.info { color: #CECBF6; }
+.tag.offline { color: #F7C1C1; }
+.row-avatar { background-color: #3C3489; color: #CECBF6; }
+button.tile:hover { filter: brightness(1.15); }
+button.tile:active { filter: brightness(1.3); }
+button.tile.hue-purple { background-color: #3C3489; color: #CECBF6; }
+button.tile.hue-purple .tile-hint { color: #AFA9EC; }
+button.tile.hue-teal { background-color: #085041; color: #9FE1CB; }
+button.tile.hue-teal .tile-hint { color: #5DCAA5; }
+button.tile.hue-coral { background-color: #712B13; color: #F5C4B3; }
+button.tile.hue-coral .tile-hint { color: #F0997B; }
+button.tile.hue-amber { background-color: #633806; color: #FAC775; }
+button.tile.hue-amber .tile-hint { color: #EF9F27; }
+button.tile.hue-blue { background-color: #0C447C; color: #B5D4F4; }
+button.tile.hue-blue .tile-hint { color: #85B7EB; }
+button.tile.hue-pink { background-color: #72243E; color: #F4C0D1; }
+button.tile.hue-pink .tile-hint { color: #ED93B1; }
+button.tile.hue-green { background-color: #27500A; color: #C0DD97; }
+button.tile.hue-green .tile-hint { color: #97C459; }
+button.tile.hue-gray { background-color: #444441; color: #D3D1C7; }
+button.tile.hue-gray .tile-hint { color: #B4B2A9; }
+button.tile.hue-red { background-color: #791F1F; color: #F7C1C1; }
+button.tile.hue-red .tile-hint { color: #F09595; }
 ";
 
 fn install_css() {
-    let provider = gtk::CssProvider::new();
-    provider.load_from_string(CSS);
-    if let Some(display) = gtk::gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(
-            &display,
-            &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-    }
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let base = gtk::CssProvider::new();
+    base.load_from_string(CSS);
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &base,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    // The colours follow light or dark (the user's choice or the desktop's), live.
+    let colors = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &colors,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    let style = adw::StyleManager::default();
+    colors.load_from_string(if style.is_dark() { DARK } else { LIGHT });
+    style.connect_dark_notify(move |style| {
+        colors.load_from_string(if style.is_dark() { DARK } else { LIGHT });
+    });
 }
 
 /// The device's current player with previous / play-pause / next.

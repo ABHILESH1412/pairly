@@ -5,7 +5,27 @@ import android.net.Uri
 import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.foundation.layout.fillMaxSize
+import kotlinx.coroutines.delay
+import dev.pairly.android.AppSettings
+import dev.pairly.android.PairlyService
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -102,21 +122,21 @@ fun HomeRoute() {
     val snackbar = remember { SnackbarHostState() }
     var scanning by rememberSaveable { mutableStateOf(false) }
     var choosingApps by rememberSaveable { mutableStateOf(false) }
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var remoteId by rememberSaveable { mutableStateOf<String?>(null) }
     var presenterId by rememberSaveable { mutableStateOf<String?>(null) }
     var commandsFor by remember { mutableStateOf<Device?>(null) }
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
     val ringing = remember { mutableStateListOf<String>() }
     val pcCommands by PcCommands.byDevice.collectAsStateWithLifecycle()
+    val enabled by AppSettings.enabled.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var askBeforeReceiving by remember { mutableStateOf(SharePrefs.askBeforeReceiving(context)) }
     var notificationAccess by remember { mutableStateOf(PairlyNotificationListener.isEnabled(context)) }
     var bluetoothAllowed by remember { mutableStateOf(PairlyBluetooth.permitted(context)) }
     var callsAllowed by remember { mutableStateOf(Calls.permitted(context)) }
     var smsAllowed by remember { mutableStateOf(Sms.permitted(context)) }
     var filesAllowed by remember { mutableStateOf(SharedFiles.permitted(context)) }
     var controlAllowed by remember { mutableStateOf(PairlyAccessibility.enabled(context)) }
-    var autoClipboard by remember { mutableStateOf(ClipboardSync.auto(context)) }
     val requestPhone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         callsAllowed = Calls.permitted(context)
         smsAllowed = Sms.permitted(context)
@@ -140,6 +160,10 @@ fun HomeRoute() {
     }
     if (choosingApps) {
         AppsScreen(onBack = { choosingApps = false })
+        return
+    }
+    if (settingsOpen) {
+        SettingsScreen(onBack = { settingsOpen = false }, onChooseApps = { choosingApps = true })
         return
     }
     state.devices.find { it.id == remoteId }?.let { device ->
@@ -208,8 +232,11 @@ fun HomeRoute() {
         notificationAccess = notificationAccess,
         onChooseApps = { choosingApps = true },
         transfers = transfers.values.toList(),
-        askBeforeReceiving = askBeforeReceiving,
         bluetoothAllowed = bluetoothAllowed,
+        onSettings = { settingsOpen = true },
+        enabled = enabled,
+        onEnabled = { PairlyService.setEnabled(context, it) },
+        onRefresh = { Pairly.networkChanged() },
         phoneFeatures = PhoneFeatures(
             calls = callsAllowed,
             texts = smsAllowed,
@@ -225,15 +252,6 @@ fun HomeRoute() {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 requestBluetooth.launch(android.Manifest.permission.BLUETOOTH_CONNECT)
             }
-        },
-        onAskBeforeReceiving = {
-            askBeforeReceiving = it
-            SharePrefs.setAskBeforeReceiving(context, it)
-        },
-        autoClipboard = autoClipboard,
-        onAutoClipboard = {
-            autoClipboard = it
-            ClipboardSync.setAuto(context, it)
         },
     )
     prompt?.let { p ->
@@ -251,42 +269,88 @@ fun HomeScreen(
     notificationAccess: Boolean = true,
     onChooseApps: () -> Unit = {},
     transfers: List<TransferData> = emptyList(),
-    askBeforeReceiving: Boolean = false,
-    onAskBeforeReceiving: (Boolean) -> Unit = {},
-    autoClipboard: Boolean = true,
-    onAutoClipboard: (Boolean) -> Unit = {},
     bluetoothAllowed: Boolean = true,
+    onSettings: () -> Unit = {},
     onAllowBluetooth: () -> Unit = {},
     phoneFeatures: PhoneFeatures? = null,
     onOpen: (Device) -> Unit = {},
+    enabled: Boolean = true,
+    onEnabled: (Boolean) -> Unit = {},
+    onRefresh: () -> Unit = {},
 ) {
     val paired = state.devices.filter { it.paired }
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val available = state.devices.filterNot { it.paired }
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
+        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
-            TopAppBar(
+            LargeTopAppBar(
                 title = {
                     Column {
-                        Text(stringResource(R.string.app_name))
+                        Text(stringResource(R.string.app_name), fontWeight = FontWeight.SemiBold)
                         state.self?.let {
-                            Text(it.name, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                stringResource(R.string.home_this_phone, it.name),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                     }
                 },
+                actions = {
+                    // The global switch: off stops Pairly until it's switched back on.
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = onEnabled,
+                        thumbContent = {
+                            Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(SwitchDefaults.IconSize))
+                        },
+                    )
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Outlined.Settings, contentDescription = stringResource(R.string.settings_title))
+                    }
+                },
+                scrollBehavior = scroll,
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            if (state.self != null) {
-                ExtendedFloatingActionButton(onClick = onScan) { Text(stringResource(R.string.action_scan)) }
+            if (enabled && state.self != null) {
+                ExtendedFloatingActionButton(
+                    onClick = onScan,
+                    icon = { Icon(Icons.Outlined.QrCodeScanner, contentDescription = null) },
+                    text = { Text(stringResource(R.string.action_scan)) },
+                )
             }
         },
     ) { padding ->
+        if (!enabled) {
+            PairlyOff(Modifier.padding(padding), onTurnOn = { onEnabled(true) })
+            return@Scaffold
+        }
+        // Pull down to look for devices again.
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = {
+                refreshing = true
+                onRefresh()
+                scope.launch {
+                    delay(1500)
+                    refreshing = false
+                }
+            },
+            modifier = Modifier.padding(top = padding.calculateTopPadding()),
+        ) {
         LazyColumn(
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = 16.dp,
                 end = 16.dp,
-                top = padding.calculateTopPadding() + 8.dp,
+                top = 8.dp,
                 bottom = padding.calculateBottomPadding() + 88.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -323,46 +387,60 @@ fun HomeScreen(
                         onClick = { onOpen(device) },
                     )
                 }
-                item {
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.share_ask_setting)) },
-                        supportingContent = { Text(stringResource(R.string.share_ask_setting_body)) },
-                        trailingContent = { Switch(askBeforeReceiving, onCheckedChange = onAskBeforeReceiving) },
-                    )
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.clipboard_auto_setting)) },
-                        supportingContent = {
-                            Text(
-                                stringResource(
-                                    if (phoneFeatures?.control == false) R.string.clipboard_auto_needs_access else R.string.clipboard_auto_setting_body,
-                                ),
-                            )
-                        },
-                        trailingContent = { Switch(autoClipboard, onCheckedChange = onAutoClipboard) },
-                    )
-                }
             }
             if (available.isNotEmpty()) {
                 item { SectionHeader(stringResource(R.string.section_available)) }
                 items(available, key = { it.id }) { device ->
-                    ListItem(
-                        headlineContent = { Text(device.name) },
-                        supportingContent = { Text(stringResource(R.string.available_to_pair)) },
-                        leadingContent = { DeviceIcon(device.kind) },
-                        trailingContent = {
-                            Button(onClick = { onPair(device.id) }) { Text(stringResource(R.string.action_pair)) }
-                        },
-                    )
+                    Card(
+                        shape = MaterialTheme.shapes.large,
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        ListItem(
+                            headlineContent = { Text(device.name, fontWeight = FontWeight.Medium) },
+                            supportingContent = { Text(stringResource(R.string.available_to_pair)) },
+                            leadingContent = { DeviceAvatar(device.kind, strong = false) },
+                            trailingContent = {
+                                FilledTonalButton(onClick = { onPair(device.id) }) { Text(stringResource(R.string.action_pair)) }
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        )
+                    }
                 }
             }
             if (state.self != null && state.devices.isEmpty()) {
                 item { Searching() }
             }
         }
+        }
     }
 
+}
+
+/** Shown while Pairly is switched off. */
+@Composable
+private fun PairlyOff(modifier: Modifier, onTurnOn: () -> Unit) {
+    Column(
+        modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        val c = dev.pairly.android.ui.theme.Hue.GRAY.colors()
+        Box(Modifier.size(96.dp).background(c.background, CircleShape), contentAlignment = Alignment.Center) {
+            Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null, tint = c.content, modifier = Modifier.size(44.dp))
+        }
+        Spacer(Modifier.height(20.dp))
+        Text(stringResource(R.string.off_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            stringResource(R.string.off_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(24.dp))
+        Button(onClick = onTurnOn) { Text(stringResource(R.string.off_turn_on)) }
+    }
 }
 
 @Composable
@@ -371,8 +449,25 @@ private fun SectionHeader(text: String) {
         text,
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(top = 8.dp),
+        modifier = Modifier.padding(start = 8.dp, top = 8.dp),
     )
+}
+
+/** A device's icon in a round badge: filled when it's connected, tinted otherwise. */
+@Composable
+internal fun DeviceAvatar(kind: DeviceKind?, strong: Boolean, size: androidx.compose.ui.unit.Dp = 48.dp) {
+    val colors = MaterialTheme.colorScheme
+    Box(
+        Modifier.size(size).background(if (strong) colors.primary else colors.secondaryContainer, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painterResource(iconFor(kind)),
+            contentDescription = null,
+            tint = if (strong) colors.onPrimary else colors.onSecondaryContainer,
+            modifier = Modifier.size(size * 0.5f),
+        )
+    }
 }
 
 @Composable

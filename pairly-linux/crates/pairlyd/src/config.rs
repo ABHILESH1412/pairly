@@ -183,7 +183,7 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        let path = path.map_or_else(default_path, Path::to_path_buf);
+        let path = file_path(path);
         let file: File = match std::fs::read_to_string(&path) {
             Ok(text) => {
                 toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?
@@ -249,6 +249,55 @@ impl Config {
             },
         })
     }
+}
+
+/// Where the config file is: `path`, or the default.
+pub fn file_path(path: Option<&Path>) -> PathBuf {
+    path.map_or_else(default_path, Path::to_path_buf)
+}
+
+/// Set this PC's name in the config file at `path`, keeping everything else (and the comments)
+/// as it is: a top-level `name = …` line is replaced, or one is added at the top.
+pub fn save_name(path: &Path, name: &str) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let line = format!("name = {}", toml::Value::String(name.to_owned()));
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    // Top-level keys come before the first [section].
+    let top = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .unwrap_or(lines.len());
+    let existing = lines[..top].iter().position(|l| {
+        l.trim_start()
+            .strip_prefix("name")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    });
+    match existing {
+        Some(i) => lines[i] = line,
+        None => {
+            // After the leading comments, so the file's header stays first.
+            let at = lines[..top]
+                .iter()
+                .position(|l| !l.trim_start().starts_with('#'))
+                .unwrap_or(top);
+            lines.insert(at, line);
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    // Check it still reads before replacing the file.
+    toml::from_str::<File>(&out).context("the new config doesn't parse")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.new");
+    std::fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }
 
 fn default_path() -> PathBuf {
@@ -322,6 +371,32 @@ fn detect_device_type() -> DeviceType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_a_name_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // No file yet: one is made.
+        save_name(&path, "Desk \"one\"").unwrap();
+        let read = |p: &Path| toml::from_str::<File>(&std::fs::read_to_string(p).unwrap()).unwrap();
+        assert_eq!(read(&path).name.as_deref(), Some("Desk \"one\""));
+        // Comments, sections and a `name` inside a section stay; the top-level name changes.
+        std::fs::write(
+            &path,
+            "# header\nname = \"Old\"\n\n[lan]\nport = 1\n# name = \"x\"\n",
+        )
+        .unwrap();
+        save_name(&path, "New").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# header\nname = \"New\"\n"));
+        assert!(text.contains("[lan]\nport = 1\n# name = \"x\""));
+        // No top-level name yet: added after the header comments, before the sections.
+        std::fs::write(&path, "# header\n[lan]\nport = 1\n").unwrap();
+        save_name(&path, "Third").unwrap();
+        let file = read(&path);
+        assert_eq!(file.name.as_deref(), Some("Third"));
+        assert_eq!(file.lan.port, Some(1));
+    }
 
     #[test]
     fn reads_the_xdg_download_dir() {

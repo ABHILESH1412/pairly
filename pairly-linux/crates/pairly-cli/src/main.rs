@@ -71,6 +71,8 @@ enum Command {
     Transfers,
     /// Forget a paired device.
     Unpair { device: String },
+    /// Rename this PC (paired devices see it when they reconnect).
+    Rename { name: String },
 }
 
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(150);
@@ -91,6 +93,10 @@ async fn main() -> Result<()> {
         Command::Id => {
             let (id, name) = daemon.get_identity().await.with_context(not_running)?;
             println!("{name}\n{id}");
+        }
+        Command::Rename { name } => {
+            daemon.set_name(&name).await.with_context(not_running)?;
+            println!("Renamed to {:?}. The daemon restarts to announce it.", name.trim());
         }
         Command::Devices => {
             let devices = daemon.list_devices().await.with_context(not_running)?;
