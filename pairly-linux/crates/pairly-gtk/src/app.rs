@@ -82,6 +82,8 @@ pub enum Input {
     /// Control a device's player: (device, player, action).
     Media(String, String, &'static str),
     Unpair(String),
+    /// Pause a paired device (true) or resume it.
+    SetPaused(String, bool),
     OpenSettings,
     About,
     /// Switch Pairly on or off.
@@ -167,6 +169,7 @@ fn link_name(link: &str) -> &str {
 fn status_text(d: &Device) -> String {
     match (d.paired, d.is_connected()) {
         (false, _) => "Available to pair".to_owned(),
+        (true, _) if d.paused => "Paused".to_owned(),
         (true, false) => "Offline".to_owned(),
         (true, true) if d.rtt_ms > 0 => {
             format!("Connected · {} · {} ms", link_name(&d.link), d.rtt_ms)
@@ -822,6 +825,22 @@ impl Component for App {
                 self.call(&sender, move |d| async move { d.cancel_transfer(t).await });
                 return;
             }
+            Input::SetPaused(id, paused) => {
+                let name = self.name_of(&id);
+                self.call(
+                    &sender,
+                    move |d| async move { d.set_paused(&id, paused).await },
+                );
+                Self::toast(
+                    widgets,
+                    &if paused {
+                        format!("Paused {name}: nothing passes either way until you resume it")
+                    } else {
+                        format!("Resumed {name}")
+                    },
+                );
+                return;
+            }
             Input::Unpair(id) => {
                 self.selected = None;
                 self.call(&sender, move |d| async move { d.unpair(&id).await });
@@ -1224,9 +1243,33 @@ fn device_page(
         .margin_start(24)
         .margin_end(24)
         .build();
-    page.append(&banner(d));
+    page.append(&banner(d, sender));
 
-    if d.paired {
+    if d.paired && d.paused {
+        let group = adw::PreferencesGroup::new();
+        let row = adw::ActionRow::builder()
+            .title("Paused")
+            .subtitle(format!(
+                "{} can't reach this PC and this PC can't reach it: no notifications, files, \
+                 messages or control either way. It stays paired.",
+                d.name
+            ))
+            .build();
+        row.add_prefix(&gtk::Image::from_icon_name("media-playback-pause-symbolic"));
+        let resume = gtk::Button::builder()
+            .label("Resume")
+            .valign(gtk::Align::Center)
+            .build();
+        resume.add_css_class("suggested-action");
+        resume.add_css_class("pill");
+        resume.connect_clicked({
+            let (sender, id) = (sender.clone(), d.id.clone());
+            move |_| sender.input(Input::SetPaused(id.clone(), false))
+        });
+        row.add_suffix(&resume);
+        group.add(&row);
+        page.append(&group);
+    } else if d.paired {
         let (on, id) = (d.is_connected(), d.id.clone());
         let phone = d.device_type == "phone";
         let with = |f: fn(String) -> Input| {
@@ -1463,7 +1506,7 @@ fn device_page(
 
 /// The top of a device page: a drawn phone (or laptop) showing its battery, the name, and tags
 /// for the connection, on a soft lavender banner.
-fn banner(d: &Device) -> gtk::Box {
+fn banner(d: &Device, sender: &ComponentSender<App>) -> gtk::Box {
     let name = gtk::Label::builder()
         .label(&d.name)
         .xalign(0.0)
@@ -1482,6 +1525,7 @@ fn banner(d: &Device) -> gtk::Box {
     };
     match (d.paired, d.is_connected()) {
         (false, _) => tag("Not paired", "info"),
+        (true, _) if d.paused => tag("❚❚ Paused", "offline"),
         (true, false) => tag("● Offline", "offline"),
         (true, true) => {
             tag("● Connected", "connected");
@@ -1511,6 +1555,32 @@ fn banner(d: &Device) -> gtk::Box {
     banner.add_css_class("device-banner");
     banner.append(&device_art(&d.device_type, d.battery, d.charging));
     banner.append(&text);
+    if d.paired {
+        // Pausing cuts the connection both ways (enforced by the daemon, not just here).
+        let (icon, tip) = if d.paused {
+            (
+                "media-playback-start-symbolic",
+                "Resume: allow this device again",
+            )
+        } else {
+            (
+                "media-playback-pause-symbolic",
+                "Pause: no connection either way until resumed",
+            )
+        };
+        let toggle = gtk::Button::builder()
+            .icon_name(icon)
+            .tooltip_text(tip)
+            .valign(gtk::Align::Center)
+            .build();
+        toggle.add_css_class("circular");
+        toggle.add_css_class("pause-toggle");
+        toggle.connect_clicked({
+            let (sender, id, paused) = (sender.clone(), d.id.clone(), d.paused);
+            move |_| sender.input(Input::SetPaused(id.clone(), !paused))
+        });
+        banner.append(&toggle);
+    }
     banner
 }
 
@@ -1667,6 +1737,7 @@ fn tile(
 fn status_pill(d: &Device, short: bool) -> gtk::Box {
     let kind = match (d.paired, d.is_connected()) {
         (false, _) => "available",
+        (true, _) if d.paused => "paused",
         (true, true) => "connected",
         (true, false) => "offline",
     };
@@ -1676,6 +1747,7 @@ fn status_pill(d: &Device, short: bool) -> gtk::Box {
         match kind {
             "connected" => "Connected".to_owned(),
             "offline" => "Offline".to_owned(),
+            "paused" => "Paused".to_owned(),
             _ => "Available".to_owned(),
         }
     } else {
@@ -1711,6 +1783,9 @@ const CSS: &str = "
 .status-pill.available { background: alpha(@accent_color, 0.15); color: @accent_color; }
 .status-pill.available .status-dot { background: @accent_color; }
 .status-pill.compact { padding: 2px 8px; }
+.status-pill.paused { background: alpha(@warning_color, 0.18); color: @warning_color; }
+.status-pill.paused .status-dot { background: @warning_color; }
+.pause-toggle { min-width: 44px; min-height: 44px; }
 .device-banner { border-radius: 26px; padding: 22px 28px; }
 .device-art-level { font-weight: bold; font-size: 13px; }
 .tag { border-radius: 999px; padding: 3px 10px; font-size: smaller; font-weight: bold; }

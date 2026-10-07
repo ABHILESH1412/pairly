@@ -104,6 +104,11 @@ pub enum NodeEvent {
     Unpaired {
         id: DeviceId,
     },
+    /// The user paused or resumed a paired device.
+    PauseChanged {
+        id: DeviceId,
+        paused: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +118,8 @@ pub struct DeviceInfo {
     /// Known once paired.
     pub device_type: Option<DeviceType>,
     pub paired: bool,
+    /// Paused: paired, but no connection either way until resumed.
+    pub paused: bool,
     /// The active transport, if connected.
     pub link: Option<TransportKind>,
     pub rtt: Option<Duration>,
@@ -304,6 +311,13 @@ impl PairlyNode {
         self.inner.unpair(id)
     }
 
+    /// Pause a paired device (or resume it). Paused, it stays paired but nothing passes
+    /// either way: its session closes, its connections are refused at the handshake, and
+    /// it isn't dialled, over any transport. Resuming reconnects when it's in reach.
+    pub async fn set_paused(&self, id: DeviceId, paused: bool) -> Result<()> {
+        self.inner.set_paused(id, paused).await
+    }
+
     /// Queue a packet for a connected (or recently connected) device.
     pub fn send(&self, id: DeviceId, packet: OutboundPacket) -> Result<Option<u64>> {
         let st = self.inner.lock();
@@ -431,6 +445,15 @@ impl Inner {
         self.registry.get(id).ok().flatten().is_some()
     }
 
+    /// Paired and not paused: may be connected to.
+    fn is_active(&self, id: &DeviceId) -> bool {
+        self.registry
+            .get(id)
+            .ok()
+            .flatten()
+            .is_some_and(|d| !d.paused)
+    }
+
     /// The link a device's session is on, if connected.
     fn link(&self, id: &DeviceId) -> Option<TransportKind> {
         self.lock()
@@ -452,8 +475,10 @@ impl Inner {
                 return;
             }
         };
+        // Paused devices are left out: no relay room, no Bluetooth dialling.
         let peers: Vec<PairedPeer> = devices
             .into_iter()
+            .filter(|d| !d.paused)
             .map(|d| {
                 let mut relays: Vec<String> = self.config.relay.iter().cloned().collect();
                 if let Some(r) = d.relay
@@ -500,7 +525,7 @@ impl Inner {
                 transport: c.transport,
             });
         }
-        if !self.is_paired(&id) {
+        if !self.is_active(&id) {
             return;
         }
         // New or seen again: a waiting reconnect or upgrade can try it now.
@@ -548,7 +573,7 @@ impl Inner {
                         && st.candidates.get(&id).is_some_and(|c| !c.is_empty())
                         && !st.peers.get(&id).is_some_and(|p| p.session.is_connected())
                 };
-                if !wanted || !inner.is_paired(&id) {
+                if !wanted || !inner.is_active(&id) {
                     break;
                 }
                 match inner.connect_once(id).await {
@@ -619,6 +644,9 @@ impl Inner {
         candidates: Vec<PeerCandidate>,
     ) -> Result<()> {
         let device = self.registry.get(&id)?.ok_or(CoreError::NotPaired(id))?;
+        if device.paused {
+            return Err(CoreError::Paused(id));
+        }
         let ch = self
             .connect_any(candidates, Dial::Reconnect(device.public_key))
             .await?;
@@ -738,6 +766,9 @@ impl Inner {
             .set_padding(ch.transport == TransportKind::Relay && self.config.relay_padding);
         if !self.registry.is_paired_key(&ch.info.remote)? {
             return Err(CoreError::NotPaired(id));
+        }
+        if !self.registry.is_active_key(&ch.info.remote)? {
+            return Err(CoreError::Paused(id));
         }
         let (session, attach_lock) = {
             let mut st = self.lock();
@@ -965,6 +996,7 @@ impl Inner {
             paired_at: unix_now(),
             relay: peer.relay.clone(),
             bluetooth: peer.bluetooth.clone(),
+            paused: false,
         })?;
         info!(%id, name = %peer.name, "paired");
         self.emit(NodeEvent::Paired {
@@ -989,6 +1021,40 @@ impl Inner {
         Ok(())
     }
 
+    async fn set_paused(self: &Arc<Self>, id: DeviceId, paused: bool) -> Result<()> {
+        if !self.is_paired(&id) {
+            return Err(CoreError::NotPaired(id));
+        }
+        if !self.registry.set_paused(&id, paused)? {
+            return Ok(());
+        }
+        info!(%id, paused, "device {}", if paused { "paused" } else { "resumed" });
+        if paused {
+            // Cut the session now; the device's reconnects are refused from here on.
+            let peer = self.lock().peers.remove(&id);
+            if let Some(peer) = peer {
+                let connected = peer.session.is_connected();
+                peer.task.abort();
+                peer.session.detach();
+                if connected {
+                    self.emit(NodeEvent::Disconnected {
+                        id,
+                        reason: "paused".into(),
+                    });
+                    for p in &self.plugins {
+                        p.on_disconnected(id).await;
+                    }
+                }
+            }
+            self.update_transport_peers();
+        } else {
+            self.update_transport_peers();
+            self.spawn_connect(id);
+        }
+        self.emit(NodeEvent::PauseChanged { id, paused });
+        Ok(())
+    }
+
     fn devices(&self) -> Result<Vec<DeviceInfo>> {
         let paired = self.registry.list()?;
         let st = self.lock();
@@ -1001,6 +1067,7 @@ impl Inner {
                     name: d.name,
                     device_type: Some(d.device_type),
                     paired: true,
+                    paused: d.paused,
                     link: session.and_then(|s| s.transport()),
                     rtt: session.and_then(|s| s.rtt()),
                 }
@@ -1018,6 +1085,7 @@ impl Inner {
                     .unwrap_or_else(|| id.to_string()),
                 device_type: None,
                 paired: false,
+                paused: false,
                 link: None,
                 rtt: None,
             });
@@ -1050,8 +1118,10 @@ impl Inner {
 struct Policy<'a>(&'a Inner);
 
 impl AcceptPolicy for Policy<'_> {
+    /// Paired and not paused: a paused device is turned away right after its first
+    /// handshake message, before anything else is exchanged.
     fn is_paired(&self, key: &PublicKey) -> bool {
-        self.0.registry.is_paired_key(key).unwrap_or(false)
+        self.0.registry.is_active_key(key).unwrap_or(false)
     }
 
     fn allow_pairing(&self) -> bool {

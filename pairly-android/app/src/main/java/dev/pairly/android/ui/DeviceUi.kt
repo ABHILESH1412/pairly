@@ -42,6 +42,10 @@ import androidx.compose.material.icons.outlined.Slideshow
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -116,6 +120,7 @@ fun StatusPill(device: Device, modifier: Modifier = Modifier, short: Boolean = f
     ) {
         when {
             !device.paired -> Tag(stringResource(R.string.available_to_pair), Hue.PURPLE)
+            device.paused -> Tag("❚❚ " + stringResource(R.string.status_paused), Hue.AMBER)
             device.link == null -> Tag("● " + stringResource(R.string.status_offline), Hue.RED)
             else -> {
                 Tag("● " + stringResource(R.string.status_connected_short), Hue.GREEN)
@@ -248,6 +253,8 @@ class DeviceActions(
     val commands: (() -> Unit)?,
     /** Lock, power off or restart a PC. */
     val power: (PowerActionData) -> Unit,
+    /** Pause (true) or resume the device: no connection either way while paused. */
+    val pause: (Boolean) -> Unit,
     val unpair: () -> Unit,
     val acceptTransfer: (ULong) -> Unit,
     val cancelTransfer: (ULong) -> Unit,
@@ -292,7 +299,10 @@ fun DeviceScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            DeviceHero(device)
+            DeviceHero(device, onPause = actions.pause)
+            if (device.paused) {
+                PausedCard(device, onResume = { actions.pause(false) })
+            }
             transfers.forEach { t ->
                 TransferRow(t, onAccept = { actions.acceptTransfer(t.id) }, onCancel = { actions.cancelTransfer(t.id) })
             }
@@ -332,7 +342,7 @@ fun DeviceScreen(
                     add(Tile(Icons.Outlined.PowerSettingsNew, stringResource(R.string.action_power_off), on, Hue.RED, { confirmPower = true }))
                 }
             }
-            TileGrid(tiles)
+            if (!device.paused) TileGrid(tiles)
             TextButton(
                 onClick = { confirmUnpair = true },
                 modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -385,7 +395,7 @@ fun DeviceScreen(
 
 /** The top of a device's screen: the drawn device with its battery, the name, and its tags. */
 @Composable
-private fun DeviceHero(device: Device) {
+private fun DeviceHero(device: Device, onPause: (Boolean) -> Unit) {
     Card(
         shape = RoundedCornerShape(32.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest),
@@ -406,6 +416,33 @@ private fun DeviceHero(device: Device) {
                 overflow = TextOverflow.Ellipsis,
             )
             StatusPill(device)
+            // Pausing cuts the connection both ways; the core enforces it, not just this button.
+            FilledTonalButton(onClick = { onPause(!device.paused) }) {
+                Icon(
+                    if (device.paused) Icons.Outlined.PlayArrow else Icons.Outlined.Pause,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(stringResource(if (device.paused) R.string.action_resume else R.string.action_pause))
+            }
+        }
+    }
+}
+
+/** Why the tiles are gone while a device is paused, and the way back. */
+@Composable
+private fun PausedCard(device: Device, onResume: () -> Unit) {
+    val c = Hue.AMBER.colors()
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = c.background, contentColor = c.content),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.paused_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.paused_body, device.name), color = c.hint)
+            Button(onClick = onResume) { Text(stringResource(R.string.action_resume)) }
         }
     }
 }

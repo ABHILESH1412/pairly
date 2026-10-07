@@ -22,6 +22,8 @@ pub enum CoreError {
     Violation(&'static str),
     #[error("device {0} is not paired")]
     NotPaired(DeviceId),
+    #[error("device {0} is paused")]
+    Paused(DeviceId),
     #[error("device {0} is not connected")]
     NotConnected(DeviceId),
     #[error("unknown device {0}")]

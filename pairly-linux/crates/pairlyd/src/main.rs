@@ -392,7 +392,10 @@ async fn on_node_event(
         | NodeEvent::DeviceLost { id }
         | NodeEvent::Connected { id, .. }
         | NodeEvent::Disconnected { id, .. }
-        | NodeEvent::Unpaired { id } => DaemonIface::device_changed(emitter, &id.to_string()).await,
+        | NodeEvent::Unpaired { id }
+        | NodeEvent::PauseChanged { id, .. } => {
+            DaemonIface::device_changed(emitter, &id.to_string()).await
+        }
         NodeEvent::PairingRequested {
             id,
             name,

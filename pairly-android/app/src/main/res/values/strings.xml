@@ -222,4 +222,9 @@
     <string name="settings_on">Pairly is on</string>
     <string name="settings_off">Pairly is off</string>
     <string name="settings_on_body">Off: no connections, no notifications, nothing shared, until you switch it back on.</string>
+    <string name="status_paused">Paused</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_resume">Resume</string>
+    <string name="paused_title">Paused</string>
+    <string name="paused_body">%1$s can\'t reach this phone and this phone can\'t reach it: no notifications, files, messages or control either way. It stays paired.</string>
 </resources>

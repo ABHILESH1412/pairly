@@ -182,6 +182,8 @@ pub struct Device {
     /// Known once paired.
     pub kind: Option<DeviceKind>,
     pub paired: bool,
+    /// Paused: paired, but nothing passes either way until resumed.
+    pub paused: bool,
     /// The active link, if connected.
     pub link: Option<Link>,
     pub rtt_ms: Option<u32>,
@@ -223,6 +225,11 @@ pub enum Event {
     },
     Unpaired {
         id: String,
+    },
+    /// A paired device was paused or resumed.
+    PauseChanged {
+        id: String,
+        paused: bool,
     },
     PingReceived {
         id: String,
@@ -267,6 +274,10 @@ impl From<NodeEvent> for Event {
                 reason,
             },
             NodeEvent::Unpaired { id } => Self::Unpaired { id: id.to_string() },
+            NodeEvent::PauseChanged { id, paused } => Self::PauseChanged {
+                id: id.to_string(),
+                paused,
+            },
         }
     }
 }
@@ -905,6 +916,7 @@ impl Node {
                 name: d.name,
                 kind: d.device_type.map(Into::into),
                 paired: d.paired,
+                paused: d.paused,
                 link: d.link.map(Into::into),
                 rtt_ms: d
                     .rtt
@@ -912,6 +924,16 @@ impl Node {
                 battery: self.battery.peer_state(d.id).map(Into::into),
             })
             .collect())
+    }
+
+    /// Pause a paired device (no connection either way) or resume it.
+    pub async fn set_paused(&self, id: String, paused: bool) -> Result<(), PairlyError> {
+        let (node, id) = (self.inner.clone(), parse_id(&id)?);
+        runtime()
+            .spawn(async move { node.set_paused(id, paused).await })
+            .await
+            .map_err(failed)??;
+        Ok(())
     }
 
     pub async fn request_pair(&self, id: String) -> Result<(), PairlyError> {

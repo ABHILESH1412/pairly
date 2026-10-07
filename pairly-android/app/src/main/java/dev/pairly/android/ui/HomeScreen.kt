@@ -203,6 +203,7 @@ fun HomeRoute() {
                 presenter = { presenterId = device.id },
                 commands = pcCommands[device.id]?.takeIf { it.isNotEmpty() }?.let { { commandsFor = device } },
                 power = { Pairly.power(device, it) },
+                pause = { Pairly.setPaused(device, it) },
                 unpair = {
                     openId = null
                     Pairly.unpair(device)
@@ -588,9 +589,9 @@ fun PairingDialog(prompt: PairingPrompt, onAnswer: (Boolean) -> Unit) {
 @Composable
 private fun HomeScreenPreview() {
     val devices = listOf(
-        Device("a", "three-desktop", DeviceKind.DESKTOP, paired = true, link = Link.LAN, rttMs = 3u, battery = BatteryData(87u, true)),
-        Device("b", "Old laptop", DeviceKind.LAPTOP, paired = true, link = null, rttMs = null, battery = null),
-        Device("c", "Living room PC", null, paired = false, link = null, rttMs = null, battery = null),
+        Device("a", "three-desktop", DeviceKind.DESKTOP, paired = true, paused = false, link = Link.LAN, rttMs = 3u, battery = BatteryData(87u, true)),
+        Device("b", "Old laptop", DeviceKind.LAPTOP, paired = true, paused = false, link = null, rttMs = null, battery = null),
+        Device("c", "Living room PC", null, paired = false, paused = false, link = null, rttMs = null, battery = null),
     )
     PairlyTheme {
         HomeScreen(

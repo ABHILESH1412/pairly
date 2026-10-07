@@ -29,6 +29,8 @@ pub struct Device {
     /// Battery percentage, or -1 if unknown (offline, or no battery).
     pub battery: i32,
     pub charging: bool,
+    /// Paused: paired, but nothing passes either way until resumed.
+    pub paused: bool,
 }
 
 impl Device {
@@ -176,6 +178,8 @@ pub trait Daemon {
     fn set_name(&self, name: &str) -> zbus::Result<()>;
     /// Stop the daemon (every device disconnects).
     fn quit(&self) -> zbus::Result<()>;
+    /// Pause a paired device (no connection either way, refused at the handshake) or resume it.
+    fn set_paused(&self, id: &str, paused: bool) -> zbus::Result<()>;
     fn list_devices(&self) -> zbus::Result<Vec<Device>>;
     /// Start pairing; answer the resulting `PairingRequested` with `ConfirmPair`.
     fn request_pair(&self, id: &str) -> zbus::Result<()>;

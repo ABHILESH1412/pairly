@@ -280,6 +280,46 @@ async fn stranger_cannot_reconnect() {
 }
 
 #[tokio::test]
+async fn paused_device_is_cut_off_both_ways_until_resumed() {
+    let net = MemoryNetwork::new();
+    let mut a = start(&net, "a", "Laptop", None).await;
+    let mut b = start(&net, "b", "Phone", None).await;
+    pair(&mut a, &mut b).await;
+    let (a_id, b_id) = (a.id(), b.id());
+
+    a.node.set_paused(b_id, true).await.unwrap();
+    b.event(|e| matches!(e, NodeEvent::Disconnected { id, .. } if *id == a_id).then_some(()))
+        .await;
+    assert!(
+        a.node
+            .devices()
+            .unwrap()
+            .iter()
+            .any(|d| d.id == b_id && d.paired && d.paused)
+    );
+    // B keeps trying (it doesn't know), A doesn't dial: neither side connects.
+    let reconnected = tokio::time::timeout(Duration::from_secs(2), async {
+        b.connected_to(a_id).await;
+    })
+    .await;
+    assert!(reconnected.is_err(), "a paused device must not get back in");
+    assert!(
+        a.node
+            .send(
+                b_id,
+                OutboundPacket::reliable(&Ping { n: 1 }, Priority::Interactive).unwrap()
+            )
+            .is_err(),
+        "nothing goes to a paused device"
+    );
+
+    // Resumed: they reconnect on their own and work again.
+    a.node.set_paused(b_id, false).await.unwrap();
+    a.connected_to(b_id).await;
+    a.ping(b_id, 7).await;
+}
+
+#[tokio::test]
 async fn unpaired_device_is_refused() {
     let net = MemoryNetwork::new();
     let mut a = start(&net, "a", "Laptop", None).await;

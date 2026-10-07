@@ -323,6 +323,11 @@ fn connect_input(picture: &gtk::Picture, window: &adw::Window, video: &Rc<Cell<(
         let line = match key {
             Key::Return | Key::KP_Enter => "key enter".to_owned(),
             Key::BackSpace => "key backspace".to_owned(),
+            Key::Delete | Key::KP_Delete => "key delete".to_owned(),
+            Key::Left | Key::KP_Left => "key left".to_owned(),
+            Key::Right | Key::KP_Right => "key right".to_owned(),
+            Key::Up | Key::KP_Up => "key up".to_owned(),
+            Key::Down | Key::KP_Down => "key down".to_owned(),
             Key::Escape => "key back".to_owned(),
             _ => match key.to_unicode().filter(|c| !c.is_control()) {
                 Some(c) => format!("text {c}"),

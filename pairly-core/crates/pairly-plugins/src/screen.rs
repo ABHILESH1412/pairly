@@ -94,6 +94,13 @@ pub enum ScreenKey {
     Recents,
     Enter,
     Backspace,
+    /// Removes the character after the cursor.
+    Delete,
+    /// The arrows move the cursor in the focused text field.
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 /// Viewer → sharer: control the shared screen. Positions are fractions (0–1) of the video.

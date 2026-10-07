@@ -47,6 +47,15 @@ impl DaemonIface {
         )
     }
 
+    /// Pause a paired device or resume it. Paused, it stays paired but nothing passes either
+    /// way: its connection closes and its reconnects are refused at the handshake.
+    async fn set_paused(&self, id: &str, paused: bool) -> fdo::Result<()> {
+        self.node
+            .set_paused(parse_id(id)?, paused)
+            .await
+            .map_err(failed)
+    }
+
     /// Stop the daemon: every device disconnects until it starts again. The app turns Pairly
     /// off with this when systemd isn't managing the daemon.
     async fn quit(&self) {
@@ -97,6 +106,7 @@ impl DaemonIface {
                     }),
                     battery: battery.map_or(-1, |b| i32::from(b.percent)),
                     charging: battery.is_some_and(|b| b.charging),
+                    paused: d.paused,
                 }
             })
             .collect())

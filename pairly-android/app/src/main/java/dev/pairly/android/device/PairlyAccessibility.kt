@@ -303,7 +303,54 @@ class PairlyAccessibility : AccessibilityService() {
                     null
                 }
             }
+            ScreenKeyData.DELETE -> edit { text, start, end ->
+                if (start != end) {
+                    Triple(text.removeRange(start, end), start, start)
+                } else if (end < text.length) {
+                    Triple(text.removeRange(end, end + 1), start, start)
+                } else {
+                    null
+                }
+            }
+            // A selection collapses to its start (left) or end (right), as on a PC.
+            ScreenKeyData.LEFT -> moveCursor { start, end, _ -> if (start != end) start else start - 1 }
+            ScreenKeyData.RIGHT -> moveCursor { start, end, _ -> if (start != end) end else end + 1 }
+            ScreenKeyData.UP -> moveByLine(forward = false)
+            ScreenKeyData.DOWN -> moveByLine(forward = true)
         }
+    }
+
+    /** Put the focused field's cursor where `to` says (given the selection and text length). */
+    private fun moveCursor(to: (Int, Int, Int) -> Int) {
+        val field = focusedField() ?: return
+        val length = if (field.isShowingHintText) 0 else field.text?.length ?: 0
+        val start = field.textSelectionStart.takeIf { it in 0..length } ?: length
+        val end = field.textSelectionEnd.takeIf { it in start..length } ?: start
+        val at = to(start, end, length).coerceIn(0, length)
+        val selection = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, at)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, at)
+        }
+        field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection)
+    }
+
+    /**
+     * Up and down: the cursor moves a line in a multi-line field; in a one-line field (or where
+     * the app doesn't support moving by line) it goes to the start or the end, as on a PC.
+     */
+    private fun moveByLine(forward: Boolean) {
+        val field = focusedField() ?: return
+        val args = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, AccessibilityNodeInfo.MOVEMENT_GRANULARITY_LINE)
+            putBoolean(AccessibilityNodeInfo.ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, false)
+        }
+        val action = if (forward) {
+            AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY
+        } else {
+            AccessibilityNodeInfo.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY
+        }
+        val moved = field.isMultiLine && field.performAction(action, args)
+        if (!moved) moveCursor { _, _, length -> if (forward) length else 0 }
     }
 
     /** Insert `typed` at the cursor of the focused text field (replacing any selection). */

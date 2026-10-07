@@ -36,6 +36,8 @@ pub struct PairedDevice {
     pub relay: Option<String>,
     /// The device's Bluetooth address: announced by it, or seen on a connection from it.
     pub bluetooth: Option<String>,
+    /// Paused by the user: still paired, but no connection either way until resumed.
+    pub paused: bool,
 }
 
 impl fmt::Debug for PairedDevice {
@@ -48,6 +50,7 @@ impl fmt::Debug for PairedDevice {
             // The relay address carries its access token.
             .field("relay", &self.relay.as_ref().map(|_| "…"))
             .field("bluetooth", &self.bluetooth)
+            .field("paused", &self.paused)
             .finish_non_exhaustive()
     }
 }
@@ -106,6 +109,12 @@ impl Registry {
         }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+        // Added after the sealed schema (version 4), so checked by the column itself.
+        if conn.prepare("SELECT paused FROM devices LIMIT 0").is_err() {
+            conn.execute_batch(
+                "ALTER TABLE devices ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;",
+            )?;
         }
         Ok(Self {
             conn: Mutex::new(conn),
@@ -187,8 +196,9 @@ impl Registry {
         let relay = self.seal_relay(&id, d.relay.as_deref())?;
         self.lock().execute(
             "INSERT OR REPLACE INTO devices
-                (id, public_key, name, device_type, pair_secret, paired_at, relay, bluetooth)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                (id, public_key, name, device_type, pair_secret, paired_at, relay, bluetooth,
+                 paused)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
                 &d.public_key.as_bytes()[..],
@@ -198,6 +208,7 @@ impl Registry {
                 i64::try_from(d.paired_at).unwrap_or(i64::MAX),
                 relay,
                 d.bluetooth,
+                d.paused,
             ],
         )?;
         Ok(())
@@ -217,6 +228,21 @@ impl Registry {
         Ok(self
             .get(&key.device_id())?
             .is_some_and(|d| d.public_key == *key))
+    }
+
+    /// Paired with this key and not paused: may connect.
+    pub fn is_active_key(&self, key: &PublicKey) -> Result<bool> {
+        Ok(self
+            .get(&key.device_id())?
+            .is_some_and(|d| d.public_key == *key && !d.paused))
+    }
+
+    /// Pause or resume a paired device. Returns whether it changed.
+    pub fn set_paused(&self, id: &DeviceId, paused: bool) -> Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE devices SET paused = ?2 WHERE id = ?1 AND paused != ?2",
+            params![id.to_string(), paused],
+        )? > 0)
     }
 
     pub fn list(&self) -> Result<Vec<PairedDevice>> {
@@ -334,6 +360,7 @@ fn from_row(row: &Row<'_>, key: Option<&FieldKey>) -> rusqlite::Result<PairedDev
         paired_at: u64::try_from(paired_at).unwrap_or(0),
         relay,
         bluetooth: row.get("bluetooth")?,
+        paused: row.get("paused")?,
     })
 }
 
@@ -354,6 +381,7 @@ mod tests {
             paired_at: unix_now(),
             relay: None,
             bluetooth: None,
+            paused: false,
         }
     }
 

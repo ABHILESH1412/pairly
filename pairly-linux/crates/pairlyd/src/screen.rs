@@ -312,6 +312,11 @@ impl LinuxScreen {
                     ScreenKey::Back => SpecialKey::Escape,
                     ScreenKey::Enter => SpecialKey::Enter,
                     ScreenKey::Backspace => SpecialKey::Backspace,
+                    ScreenKey::Delete => SpecialKey::Delete,
+                    ScreenKey::Left => SpecialKey::Left,
+                    ScreenKey::Right => SpecialKey::Right,
+                    ScreenKey::Up => SpecialKey::Up,
+                    ScreenKey::Down => SpecialKey::Down,
                     ScreenKey::Home | ScreenKey::Recents => return,
                 };
                 pc.key(
@@ -483,6 +488,11 @@ fn parse_input(line: &str) -> Option<ScreenInput> {
                 "recents" => ScreenKey::Recents,
                 "enter" => ScreenKey::Enter,
                 "backspace" => ScreenKey::Backspace,
+                "delete" => ScreenKey::Delete,
+                "left" => ScreenKey::Left,
+                "right" => ScreenKey::Right,
+                "up" => ScreenKey::Up,
+                "down" => ScreenKey::Down,
                 _ => return None,
             },
         },

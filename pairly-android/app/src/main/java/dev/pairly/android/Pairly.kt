@@ -596,6 +596,19 @@ object Pairly {
         }
     }
 
+    /**
+     * Pause a paired device (nothing passes either way: the connection closes and its
+     * reconnects are refused) or resume it.
+     */
+    fun setPaused(device: Device, paused: Boolean) {
+        val n = node ?: return
+        scope.launch {
+            runCatching { n.setPaused(device.id, paused) }
+                .onSuccess { say(if (paused) "Paused ${device.name}" else "Resumed ${device.name}") }
+                .onFailure { say(it.describe()) }
+        }
+    }
+
     fun unpair(device: Device) {
         runCatching { node?.unpair(device.id) }.onFailure { say(it.describe()) }
     }

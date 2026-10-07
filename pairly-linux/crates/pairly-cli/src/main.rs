@@ -71,6 +71,10 @@ enum Command {
     Transfers,
     /// Forget a paired device.
     Unpair { device: String },
+    /// Pause a paired device: nothing passes either way until it's resumed.
+    Pause { device: String },
+    /// Resume a paused device.
+    Resume { device: String },
     /// Rename this PC (paired devices see it when they reconnect).
     Rename { name: String },
 }
@@ -96,7 +100,10 @@ async fn main() -> Result<()> {
         }
         Command::Rename { name } => {
             daemon.set_name(&name).await.with_context(not_running)?;
-            println!("Renamed to {:?}. The daemon restarts to announce it.", name.trim());
+            println!(
+                "Renamed to {:?}. The daemon restarts to announce it.",
+                name.trim()
+            );
         }
         Command::Devices => {
             let devices = daemon.list_devices().await.with_context(not_running)?;
@@ -166,6 +173,19 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        Command::Pause { device } => {
+            let device = resolve(&daemon, &device).await?;
+            daemon.set_paused(&device.id, true).await?;
+            println!(
+                "Paused {}: nothing passes either way until you resume it.",
+                device.name
+            );
+        }
+        Command::Resume { device } => {
+            let device = resolve(&daemon, &device).await?;
+            daemon.set_paused(&device.id, false).await?;
+            println!("Resumed {}", device.name);
+        }
         Command::Unpair { device } => {
             let device = resolve(&daemon, &device).await?;
             daemon.unpair(&device.id).await?;
@@ -194,6 +214,7 @@ fn print_devices(devices: &[Device]) {
         let status = match (d.paired, d.is_connected()) {
             (true, true) if d.rtt_ms > 0 => format!("connected ({}, {} ms)", d.link, d.rtt_ms),
             (true, true) => format!("connected ({})", d.link),
+            (true, _) if d.paused => "paused".to_owned(),
             (true, false) => "paired, offline".to_owned(),
             (false, _) => "available to pair".to_owned(),
         };
