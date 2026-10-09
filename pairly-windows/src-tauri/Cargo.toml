@@ -1,7 +1,7 @@
 [package]
 name = "pairly-windows"
 description = "Pairly for Windows: your phone and your PC, working as one"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.93"
 license = "GPL-3.0-or-later"
