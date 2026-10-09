@@ -82,7 +82,8 @@ pub fn power(action: pairly_plugins::power::PowerAction) -> Result<(), String> {
 pub fn beep() {
     #[cfg(windows)]
     {
-        use windows::Win32::UI::WindowsAndMessaging::{MB_ICONEXCLAMATION, MessageBeep};
+        use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+        use windows::Win32::UI::WindowsAndMessaging::MB_ICONEXCLAMATION;
         // SAFETY: plays a system sound; nothing to clean up.
         let _ = unsafe { MessageBeep(MB_ICONEXCLAMATION) };
     }
