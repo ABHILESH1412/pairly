@@ -171,6 +171,8 @@ async fn execute(line: &str) -> (bool, String) {
         .arg("-c")
         .arg(line)
         .current_dir(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
+        // So commands that open windows (a browser, an app) find the display.
+        .envs(crate::desktop_env::vars())
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();

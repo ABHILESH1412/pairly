@@ -11,9 +11,9 @@
 //!
 //! File I/O runs on one OS thread per transfer, so the async runtime never waits on a disk.
 
+use crate::fileio::AtOffset;
 use std::collections::HashMap;
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};

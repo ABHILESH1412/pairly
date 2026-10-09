@@ -119,6 +119,8 @@ pub enum Cmd {
     PlayersChanged(String),
     Players(String, Vec<Player>),
     Failed(String),
+    /// The daemon runs a different version (it updated itself): offer to restart the app.
+    NewVersion(String),
     Done,
 }
 
@@ -880,6 +882,15 @@ impl Component for App {
         match message {
             Cmd::Connected(..) | Cmd::Unavailable(_) if self.off => return,
             Cmd::Connected(daemon, me) => {
+                let check = daemon.clone();
+                sender.oneshot_command(async move {
+                    match check.update_status().await {
+                        Ok((version, ..)) if version != crate::settings::VERSION => {
+                            Cmd::NewVersion(version)
+                        }
+                        _ => Cmd::Done,
+                    }
+                });
                 self.daemon = Some(daemon);
                 self.me = Some(me);
                 self.status = Status::Ready;
@@ -991,6 +1002,16 @@ impl Component for App {
             }
             Cmd::Failed(e) => {
                 Self::toast(widgets, &e);
+                return;
+            }
+            Cmd::NewVersion(version) => {
+                let toast = adw::Toast::builder()
+                    .title(format!("Pairly was updated to {version}"))
+                    .button_label("Restart")
+                    .timeout(0)
+                    .build();
+                toast.connect_button_clicked(|_| restart_app());
+                widgets.toasts.add_toast(toast);
                 return;
             }
             Cmd::Done => return,
@@ -1148,28 +1169,88 @@ fn device_row(d: &Device, sender: &ComponentSender<App>) -> gtk::ListBoxRow {
 }
 
 /// Accept files dragged in from a file manager.
-fn file_drop_target(on_drop: impl Fn(Vec<String>) + 'static) -> gtk::DropTarget {
-    let target = gtk::DropTarget::new(
-        gtk::gdk::FileList::static_type(),
-        gtk::gdk::DragAction::COPY,
-    );
-    target.connect_drop(move |_, value, _, _| {
-        let Ok(list) = value.get::<gtk::gdk::FileList>() else {
-            return false;
-        };
-        let paths: Vec<String> = list
-            .files()
-            .iter()
-            .filter_map(|f| f.path())
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        if paths.is_empty() {
-            return false;
-        }
-        on_drop(paths);
+///
+/// The plain list of file links (`text/uri-list`) is read first: GTK's own file-list format
+/// goes through the desktop's document portal, and when that service isn't running the drop
+/// fails silently. The file list is only the fallback for sources without links.
+fn file_drop_target(on_drop: impl Fn(Vec<String>) + 'static) -> gtk::DropTargetAsync {
+    use gtk::gdk;
+    let formats = gdk::ContentFormatsBuilder::new()
+        .add_mime_type(URI_LIST)
+        .add_type(gdk::FileList::static_type())
+        .build();
+    let target = gtk::DropTargetAsync::new(Some(formats), gdk::DragAction::COPY);
+    // Always a copy: the file manager must never delete the original.
+    target.connect_drag_enter(|_, _, _, _| gdk::DragAction::COPY);
+    target.connect_drag_motion(|_, _, _, _| gdk::DragAction::COPY);
+    let on_drop = std::rc::Rc::new(on_drop);
+    target.connect_drop(move |_, drop, _, _| {
+        let (drop, on_drop) = (drop.clone(), on_drop.clone());
+        gtk::glib::spawn_future_local(async move {
+            let paths = dropped_paths(&drop).await;
+            if paths.is_empty() {
+                drop.finish(gdk::DragAction::empty());
+            } else {
+                drop.finish(gdk::DragAction::COPY);
+                on_drop(paths);
+            }
+        });
         true
     });
     target
+}
+
+const URI_LIST: &str = "text/uri-list";
+
+/// The local files in a drop: from its link list if it has one, else its file list.
+async fn dropped_paths(drop: &gtk::gdk::Drop) -> Vec<String> {
+    use gtk::gio::prelude::*;
+    let local = |files: Vec<gtk::gio::File>| -> Vec<String> {
+        files
+            .iter()
+            .filter_map(gtk::gio::File::path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    };
+    if drop.formats().contain_mime_type(URI_LIST)
+        && let Ok((stream, _)) = drop
+            .read_future(&[URI_LIST], gtk::glib::Priority::DEFAULT)
+            .await
+    {
+        let mut text = Vec::new();
+        loop {
+            match stream
+                .read_bytes_future(64 * 1024, gtk::glib::Priority::DEFAULT)
+                .await
+            {
+                Ok(chunk) if !chunk.is_empty() => text.extend_from_slice(&chunk),
+                _ => break,
+            }
+        }
+        let files: Vec<gtk::gio::File> = String::from_utf8_lossy(&text)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(gtk::gio::File::for_uri)
+            .collect();
+        let paths = local(files);
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    match drop
+        .read_value_future(
+            gtk::gdk::FileList::static_type(),
+            gtk::glib::Priority::DEFAULT,
+        )
+        .await
+    {
+        Ok(value) => value
+            .get::<gtk::gdk::FileList>()
+            .map(|list| local(list.files()))
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
 }
 
 fn local_paths(files: &gtk::gio::ListModel) -> Vec<String> {
@@ -2114,4 +2195,21 @@ fn code_dialog(
         });
     });
     dialog
+}
+
+/// Start this app again (the new version, now at the same path): a moment after this one quits,
+/// since a second copy would only hand over to the running one.
+fn restart_app() {
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe
+            .to_string_lossy()
+            .trim_end_matches(" (deleted)")
+            .to_owned();
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1; exec \"$0\"")
+            .arg(exe)
+            .spawn();
+    }
+    relm4::main_application().quit();
 }

@@ -359,7 +359,7 @@ fn open_reply_dialog(m: &Mirror) {
         .map(|p| p.with_file_name("pairly-gtk"))
         .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("pairly-gtk"));
-    let spawned = std::process::Command::new(exe)
+    let spawned = crate::desktop_env::command(exe)
         .args(["--reply", &m.peer.to_string(), &m.id, &m.title])
         .spawn();
     match spawned {

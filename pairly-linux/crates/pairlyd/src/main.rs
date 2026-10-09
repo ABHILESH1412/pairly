@@ -8,6 +8,7 @@ mod commands;
 mod config;
 mod contacts;
 mod dbus;
+mod desktop_env;
 mod input;
 mod keyring;
 mod laser;
@@ -21,6 +22,7 @@ mod share;
 mod sms;
 mod telephony;
 mod tray;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -228,6 +230,7 @@ async fn main() -> Result<()> {
     let notification_apps = Arc::new(notification_apps::AppFilter::load(&config.data_dir));
     let restart = Arc::new(Notify::new());
     let quit = Arc::new(Notify::new());
+    let updater = update::Updater::new(&config.data_dir, &cache_dir, restart.clone());
     let conn = zbus::connection::Builder::session()?
         .serve_at(
             pairly_dbus::OBJECT_PATH,
@@ -241,6 +244,7 @@ async fn main() -> Result<()> {
                 config_path: config::file_path(args.config.as_deref()),
                 restart: restart.clone(),
                 quit: quit.clone(),
+                updater: updater.clone(),
             },
         )?
         .name(config.bus_name.as_str())?
@@ -253,6 +257,8 @@ async fn main() -> Result<()> {
             )
         })?;
     info!(id = %node.device_id(), "ready");
+    updater.set_conn(conn.clone());
+    tokio::spawn(updater.clone().run());
 
     let tray = if config.tray {
         PairlyTray::new(node.clone(), features.clone(), quit.clone())

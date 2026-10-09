@@ -61,6 +61,37 @@ gh auth login
 In `gh auth login`, choose **GitHub.com**, then **SSH** (it finds the key you already added),
 then **Login with a web browser**, and enter the code it shows.
 
+## 3b. Create the update signing key (once, and keep it forever)
+
+All three apps update themselves from GitHub releases. The Linux and Windows apps install an
+update only if it carries a signature from **your** update key, so a tampered download (or
+someone who got into your GitHub account) can't install anything. (Android checks the APK's
+own signature, made with the release key from step 2.)
+
+```sh
+sudo pacman -S minisign
+minisign -G -p ~/pairly-update.pub -s ~/pairly-update.key
+```
+
+It asks for a password: pick a strong one and keep it with the release key's. Then put the
+**public** half in the repository (the apps carry it) and commit it:
+
+```sh
+cp ~/pairly-update.pub ~/work/pairly/keys/update.pub
+```
+
+Never commit `~/pairly-update.key`, and back it up with the release key. If you lose it, the
+installed apps can't take updates any more until they're reinstalled by hand.
+
+### Let GitHub sign the Windows installer
+
+The Windows installer is built on GitHub's machines when a release is published. Give them the
+key once: in the repository on GitHub, open **Settings → Secrets and variables → Actions →
+New repository secret**, and add:
+
+- `TAURI_SIGNING_PRIVATE_KEY`: the output of `base64 -w0 ~/pairly-update.key`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the key's password
+
 ## 4. Release (every time)
 
 Commit your work as usual (`git add`, `git commit`), then run **one command** from the

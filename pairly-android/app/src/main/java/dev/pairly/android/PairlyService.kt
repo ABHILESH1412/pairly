@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Keeps the node (and its connections) alive while the app is in the background. */
@@ -80,6 +81,14 @@ class PairlyService : Service() {
             ContextCompat.RECEIVER_EXPORTED,
         )
         scope.launch { Pairly.start(applicationContext) }
+        // Updates: a check a little after starting, then twice a day while Pairly runs.
+        scope.launch {
+            delay(UPDATE_FIRST_CHECK_MS)
+            while (true) {
+                dev.pairly.android.update.Updater.check(applicationContext)
+                delay(UPDATE_CHECK_EVERY_MS)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -97,6 +106,9 @@ class PairlyService : Service() {
     }
 
     companion object {
+        private const val UPDATE_FIRST_CHECK_MS = 2 * 60 * 1000L
+        private const val UPDATE_CHECK_EVERY_MS = 12 * 60 * 60 * 1000L
+
         /** Start the service (and the node), unless Pairly is switched off. */
         fun start(context: Context) {
             if (!AppSettings.enabled.value) return

@@ -255,7 +255,11 @@ pub fn human_size(bytes: u64) -> String {
 
 /// Open a file, folder or link with the default application.
 fn open(target: &str) {
-    match tokio::process::Command::new("xdg-open").arg(target).spawn() {
+    match tokio::process::Command::new("xdg-open")
+        .arg(target)
+        .envs(crate::desktop_env::vars())
+        .spawn()
+    {
         Ok(mut child) => drop(tokio::spawn(async move { child.wait().await })),
         Err(e) => warn!(error = %e, "can't run xdg-open"),
     }

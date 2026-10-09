@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pairly</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <aside id="sidebar" class="sidebar">
+      <header class="bar">
+        <button class="icon" id="pair-button" title="Pair a new device" aria-label="Pair a new device">＋</button>
+        <div class="title">Pairly<small id="me-name"></small></div>
+        <button class="icon" id="settings-button" title="Settings" aria-label="Settings">⚙</button>
+      </header>
+      <nav id="device-list" class="device-list"></nav>
+      <footer class="power-bar">
+        <span id="power-label">Pairly is on</span>
+        <label class="switch"><input type="checkbox" id="power-switch" checked><span></span></label>
+      </footer>
+    </aside>
+
+    <main class="content">
+      <header class="bar">
+        <button class="icon" id="sidebar-button" title="Show or hide the device list" aria-label="Show or hide the device list">☰</button>
+        <div class="title" id="page-title">Pairly</div>
+        <span class="bar-spacer"></span>
+      </header>
+      <div id="page" class="page"></div>
+    </main>
+  </div>
+
+  <div id="modal" class="modal" hidden><div class="dialog" id="dialog"></div></div>
+  <div id="toasts" class="toasts"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

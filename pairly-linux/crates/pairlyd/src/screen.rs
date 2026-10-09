@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Stdio};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
@@ -120,7 +120,7 @@ impl LinuxScreen {
         if self.casts().contains_key(&from.id) {
             return Ok(());
         }
-        let mut child = Command::new(crate::laser::gtk_binary())
+        let mut child = crate::desktop_env::command(crate::laser::gtk_binary())
             .arg("--cast")
             .arg(&sharing.token_file)
             .stdin(Stdio::piped())
@@ -357,7 +357,7 @@ impl LinuxScreen {
         if self.lock().contains_key(&peer) {
             return Ok(()); // already watching: the phone just asks again
         }
-        let mut child = Command::new(crate::laser::gtk_binary())
+        let mut child = crate::desktop_env::command(crate::laser::gtk_binary())
             .args(["--screen", name])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

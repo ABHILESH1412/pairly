@@ -9,8 +9,9 @@
 #   scripts/release.sh --dry-run  show what the version bump would change, then undo it
 #
 # Commit your own work first; this script makes one commit of its own ("Release vX.Y.Z").
-# Needs: the release key (pairly-android/keystore.properties) and the GitHub CLI, logged in
-# (`gh auth login`). See docs/releasing.md.
+# Needs: the release key (pairly-android/keystore.properties), the update signing key
+# (~/pairly-update.key, made with minisign; its public half in keys/update.pub) and the GitHub
+# CLI, logged in (`gh auth login`). See docs/releasing.md.
 #
 # If anything fails before the push, the version bump is undone and nothing leaves this PC.
 set -euo pipefail
@@ -45,6 +46,7 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
 capped() { systemd-run --user --scope --quiet -p MemoryMax=5G -p MemorySwapMax=1G "$@"; }
 
 metainfo="pairly-linux/data/io.github.abhilesh1412.Pairly.metainfo.xml"
+update_key="${PAIRLY_UPDATE_KEY:-$HOME/pairly-update.key}"
 pkgbuild="pairly-linux/packaging/arch/PKGBUILD"
 gradle="pairly-android/app/build.gradle.kts"
 repo_url="$(sed -n "s/^url='\(.*\)'/\1/p" "$pkgbuild")"
@@ -58,6 +60,11 @@ if [ "$dry_run" = 0 ]; then
   [ "$(git branch --show-current)" = main ] || die "switch to the main branch first"
   [ -f pairly-android/keystore.properties ] ||
     die "pairly-android/keystore.properties is missing (see docs/releasing.md, step 2)"
+  # Updates install only with a valid signature from this key: no key, no release.
+  command -v minisign >/dev/null || die "minisign isn't installed: sudo pacman -S minisign"
+  [ -f "$update_key" ] || die "the update signing key $update_key is missing (see docs/releasing.md)"
+  grep -q PLACEHOLDER keys/update.pub &&
+    die "keys/update.pub is still the placeholder: copy your key's public half there (docs/releasing.md)"
   git fetch --quiet --tags origin main
   [ "$(git rev-list --count HEAD..origin/main)" = 0 ] ||
     die "GitHub has commits you don't: git pull first"
@@ -132,6 +139,18 @@ done
 for ws in pairly-core pairly-linux; do
   (cd "$ws" && cargo metadata --offline --format-version 1 >/dev/null)
 done
+# The Windows app (built and published by GitHub Actions when the release goes out).
+sed -i "0,/^version = \".*\"/s//version = \"$version\"/" pairly-windows/src-tauri/Cargo.toml
+python3 - "$version" <<'PY'
+import json, sys
+path = "pairly-windows/src-tauri/tauri.conf.json"
+conf = json.load(open(path))
+conf["version"] = sys.argv[1]
+with open(path, "w") as f:
+    json.dump(conf, f, indent=2)
+    f.write("\n")
+PY
+(cd pairly-windows/src-tauri && cargo metadata --offline --format-version 1 >/dev/null)
 code="$(sed -n 's/^ *versionCode = \([0-9]*\)/\1/p' "$gradle")"
 sed -i "s/^\( *versionCode = \)[0-9]*/\1$((code + 1))/; s/^\( *versionName = \)\".*\"/\1\"$version\"/" "$gradle"
 sed -i "s/^pkgver=.*/pkgver=$version/; s/^pkgrel=.*/pkgrel=1/; s/^sha256sums=.*/sha256sums=('SKIP')/" "$pkgbuild"
@@ -202,6 +221,13 @@ Remove again:
 EOF
 tar -C "$stage" -czf "$out/$bundle.tar.gz" "$bundle"
 rm -rf "$stage"
+
+step "Signing the Linux bundle for auto-updates"
+# Asks for the update key's password. Installed apps accept the update only with this
+# signature, so check it against the public key they carry before publishing.
+minisign -S -s "$update_key" -m "$out/$bundle.tar.gz" -t "Pairly $version for Linux"
+minisign -Vq -p keys/update.pub -m "$out/$bundle.tar.gz" ||
+  die "the signature doesn't match keys/update.pub: is that the public half of $update_key?"
 (cd "$out" && sha256sum "$apk" "$bundle.tar.gz" >SHA256SUMS)
 
 # ----- 4. Commit, tag and push ----------------------------------------------------------
@@ -233,6 +259,8 @@ $changes
 
 **Android 8 or newer:** download \`$apk\` below and open it on your phone.
 
+**Windows 10 or 11:** download \`pairly-$version-windows-x64-setup.exe\` below (it appears a few minutes after the release, once GitHub has built it) and run it.
+
 **Arch, EndeavourOS, Manjaro:** download \`PKGBUILD\` and \`pairly.install\` into an empty folder, then run \`makepkg -si\` there, then \`systemctl --user enable --now pairlyd\`.
 
 **Other Linux (x86_64):** download \`$bundle.tar.gz\`, unpack it, and run \`make install activate\` inside (installs under ~/.local).
@@ -246,10 +274,10 @@ $(cat "$out/SHA256SUMS")
 \`\`\`
 EOF
 gh release create "$tag" --title "Pairly $version" --notes-file "$out/notes.md" --verify-tag \
-  "$out/$apk" "$out/$bundle.tar.gz" "$out/SHA256SUMS" \
+  "$out/$apk" "$out/$bundle.tar.gz" "$out/$bundle.tar.gz.minisig" "$out/SHA256SUMS" \
   "$out/arch/PKGBUILD" "$out/arch/pairly.install" ||
   die "the release wasn't published. Everything is pushed; retry with:
-  gh release create $tag --title \"Pairly $version\" --notes-file $out/notes.md --verify-tag $out/$apk $out/$bundle.tar.gz $out/SHA256SUMS $out/arch/PKGBUILD $out/arch/pairly.install"
+  gh release create $tag --title \"Pairly $version\" --notes-file $out/notes.md --verify-tag $out/$apk $out/$bundle.tar.gz $out/$bundle.tar.gz.minisig $out/SHA256SUMS $out/arch/PKGBUILD $out/arch/pairly.install"
 
 step "Released Pairly $version"
 echo "$repo_url/releases/tag/$tag"

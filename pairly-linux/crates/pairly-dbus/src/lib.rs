@@ -178,6 +178,13 @@ pub trait Daemon {
     fn set_name(&self, name: &str) -> zbus::Result<()>;
     /// Stop the daemon (every device disconnects).
     fn quit(&self) -> zbus::Result<()>;
+    /// (this version, state, detail, automatic): see the daemon's `UpdateStatus`.
+    fn update_status(&self) -> zbus::Result<(String, String, String, bool)>;
+    fn check_for_updates(&self) -> zbus::Result<()>;
+    fn install_update(&self) -> zbus::Result<()>;
+    fn set_auto_update(&self, on: bool) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn update_changed(&self) -> zbus::Result<()>;
     /// Pause a paired device (no connection either way, refused at the handshake) or resume it.
     fn set_paused(&self, id: &str, paused: bool) -> zbus::Result<()>;
     fn list_devices(&self) -> zbus::Result<Vec<Device>>;

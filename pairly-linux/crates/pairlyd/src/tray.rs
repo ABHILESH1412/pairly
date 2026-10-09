@@ -2,7 +2,6 @@
 //! Waybar's `tray` module, KDE Plasma, and GNOME with the AppIndicator extension.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 
 use ksni::menu::{StandardItem, SubMenu};
@@ -188,7 +187,7 @@ fn launch_ui(args: &[String]) {
         .map(|p| p.with_file_name("pairly-gtk"))
         .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("pairly-gtk"));
-    match Command::new(exe).args(args).spawn() {
+    match crate::desktop_env::command(exe).args(args).spawn() {
         // Reap it when it exits so it doesn't linger as a zombie.
         Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
         Err(e) => warn!(error = %e, "could not start pairly-gtk"),

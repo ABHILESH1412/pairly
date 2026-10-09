@@ -18,6 +18,7 @@ pub struct DaemonIface {
     pub restart: std::sync::Arc<tokio::sync::Notify>,
     /// Stop the daemon (Pairly turned off).
     pub quit: std::sync::Arc<tokio::sync::Notify>,
+    pub updater: std::sync::Arc<crate::update::Updater>,
 }
 
 fn parse_id(id: &str) -> fdo::Result<DeviceId> {
@@ -45,6 +46,32 @@ impl DaemonIface {
             self.node.device_id().to_string(),
             self.node.name().to_owned(),
         )
+    }
+
+    /// The updater: (this version, state, detail, automatic updates on). States: idle,
+    /// checking, up-to-date, available, installing, installed, managed (the package
+    /// manager's to update), failed; the detail is the new version or the error.
+    async fn update_status(&self) -> (String, String, String, bool) {
+        let (state, detail) = self.updater.status().describe();
+        (
+            crate::update::VERSION.to_owned(),
+            state.to_owned(),
+            detail,
+            self.updater.auto(),
+        )
+    }
+
+    async fn check_for_updates(&self) {
+        self.updater.check_now();
+    }
+
+    /// Install the update found (when automatic updates are off).
+    async fn install_update(&self) {
+        self.updater.install_now();
+    }
+
+    async fn set_auto_update(&self, on: bool) {
+        self.updater.set_auto(on);
     }
 
     /// Pause a paired device or resume it. Paused, it stays paired but nothing passes either
@@ -635,6 +662,9 @@ impl DaemonIface {
 
     #[zbus(signal)]
     pub async fn device_changed(emitter: &SignalEmitter<'_>, id: &str) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    pub async fn update_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
     pub async fn pairing_requested(

@@ -5,7 +5,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -107,7 +107,7 @@ fn running(st: &mut State) -> bool {
 }
 
 fn spawn() -> std::io::Result<(Child, ChildStdin)> {
-    let mut child = Command::new(gtk_binary())
+    let mut child = crate::desktop_env::command(gtk_binary())
         .arg("--laser")
         .stdin(Stdio::piped())
         .spawn()?;

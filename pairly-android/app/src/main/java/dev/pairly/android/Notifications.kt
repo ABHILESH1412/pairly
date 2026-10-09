@@ -26,6 +26,7 @@ object Notifications {
     const val CHANNEL_TRANSFERS = "transfers"
     /** Screen sharing: the request to share, and the "sharing now" notice. */
     const val CHANNEL_SCREEN = "screen"
+    const val CHANNEL_UPDATES = "updates"
     private const val CHANNEL_SERVICE = "service"
     private const val CHANNEL_PINGS = "pings"
     private val nextId = AtomicInteger(100)
@@ -57,6 +58,9 @@ object Notifications {
                 NotificationChannelCompat.Builder(CHANNEL_TRANSFERS, NotificationManagerCompat.IMPORTANCE_LOW)
                     .setName(context.getString(R.string.channel_transfers))
                     .setShowBadge(false)
+                    .build(),
+                NotificationChannelCompat.Builder(CHANNEL_UPDATES, NotificationManagerCompat.IMPORTANCE_DEFAULT)
+                    .setName(context.getString(R.string.channel_updates))
                     .build(),
                 NotificationChannelCompat.Builder(CHANNEL_MIRRORS, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName(context.getString(R.string.channel_mirrors))

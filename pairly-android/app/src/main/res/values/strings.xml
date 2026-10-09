@@ -227,4 +227,23 @@
     <string name="action_resume">Resume</string>
     <string name="paused_title">Paused</string>
     <string name="paused_body">%1$s can\'t reach this phone and this phone can\'t reach it: no notifications, files, messages or control either way. It stays paired.</string>
+    <string name="channel_updates">Updates</string>
+    <string name="update_available_title">Pairly %1$s is available</string>
+    <string name="update_available_body">Tap to download and install it</string>
+    <string name="update_ready_title">Pairly %1$s is ready to install</string>
+    <string name="update_ready_body">Tap to install the update</string>
+    <string name="update_done_title">Pairly updated to %1$s</string>
+    <string name="settings_updates">Updates</string>
+    <string name="update_auto">Update automatically</string>
+    <string name="update_auto_body">Download new versions from Pairly\'s GitHub releases and install them</string>
+    <string name="update_check">Check now</string>
+    <string name="update_install">Install</string>
+    <string name="update_status_idle">Version %1$s</string>
+    <string name="update_status_checking">Checking for updates…</string>
+    <string name="update_status_up_to_date">Pairly %1$s is up to date</string>
+    <string name="update_status_available">Pairly %1$s is available</string>
+    <string name="update_status_downloading">Downloading Pairly %1$s…</string>
+    <string name="update_status_installing">Installing Pairly %1$s…</string>
+    <string name="update_status_failed">Couldn\'t update: %1$s</string>
+    <string name="update_status_dev">Development builds don\'t update themselves</string>
 </resources>

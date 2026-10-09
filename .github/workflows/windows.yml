@@ -1,0 +1,77 @@
+# Pairly for Windows, built on GitHub's Windows machines.
+#
+# - A push that touches the Windows app (or the shared core) builds it, to catch mistakes.
+# - A published release builds the installer, signs it with the update key, and attaches the
+#   installer, its signature and latest.json (what installed apps read to find updates).
+#
+# Secrets (Settings → Secrets and variables → Actions), see docs/releasing.md:
+#   TAURI_SIGNING_PRIVATE_KEY           base64 of ~/pairly-update.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  that key's password
+
+name: Windows app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pairly-windows/**"
+      - "pairly-core/**"
+      - "keys/**"
+      - ".github/workflows/windows.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pairly-windows/src-tauri -> target
+
+      - name: Use the update key's public half from the repository
+        shell: bash
+        run: python pairly-windows/scripts/set_update_key.py
+
+      - name: Build (check)
+        if: github.event_name != 'release'
+        working-directory: pairly-windows/src-tauri
+        run: cargo build --release --locked
+
+      - name: Install the Tauri command-line tool
+        if: github.event_name == 'release'
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build and sign the installer
+        if: github.event_name == 'release'
+        working-directory: pairly-windows/src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --ci
+
+      - name: Attach the installer, its signature and latest.json to the release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          dir=pairly-windows/src-tauri/target/release/bundle/nsis
+          installer="$(ls "$dir"/*-setup.exe | head -1)"
+          # A stable name, so links don't change with the version.
+          version="${TAG#v}"
+          name="pairly-$version-windows-x64-setup.exe"
+          cp "$installer" "$dir/$name"
+          cp "$installer.sig" "$dir/$name.sig"
+          python pairly-windows/scripts/latest_json.py "$version" "$TAG" "$name" "$dir/$name.sig" > "$dir/latest.json"
+          gh release upload "$TAG" "$dir/$name" "$dir/$name.sig" "$dir/latest.json" --clobber

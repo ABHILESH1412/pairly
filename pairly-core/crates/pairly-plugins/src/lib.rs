@@ -13,6 +13,7 @@ pub mod findmy;
 pub mod input;
 pub mod media;
 pub mod notification;
+mod fileio;
 mod peers;
 pub mod ping;
 pub mod power;

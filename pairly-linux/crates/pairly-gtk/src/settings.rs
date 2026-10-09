@@ -279,6 +279,8 @@ pub fn open(
     }
     page.add(&this_pc);
 
+    page.add(&updates_group(daemon.clone()));
+
     // About.
     let about = adw::PreferencesGroup::builder().title("About").build();
     let version = adw::ActionRow::builder()
@@ -314,4 +316,122 @@ pub fn about_dialog() -> adw::AboutDialog {
         .issue_url(format!("{WEBSITE}/issues"))
         .license_type(gtk::License::Gpl30)
         .build()
+}
+
+/// Run a daemon call off the GTK thread; `done` gets the result back on it.
+fn call<T: Send + 'static>(
+    fut: impl Future<Output = zbus::Result<T>> + Send + 'static,
+    done: impl FnOnce(Result<T, String>) + 'static,
+) {
+    gtk::glib::spawn_future_local(async move {
+        let result = match relm4::spawn(fut).await {
+            Ok(r) => r.map_err(|e| describe(&e)),
+            Err(e) => Err(e.to_string()),
+        };
+        done(result);
+    });
+}
+
+/// What the updater is doing, in words (from the daemon's `UpdateStatus`).
+fn update_text(current: &str, state: &str, detail: &str) -> String {
+    match state {
+        "checking" => "Checking for updates…".to_owned(),
+        "up-to-date" => format!("Pairly {current} is up to date"),
+        "available" => format!("Pairly {detail} is available"),
+        "installing" => format!("Installing Pairly {detail}…"),
+        "installed" => format!("Updated to {detail}: reopen Pairly to use it"),
+        "managed" => format!("Pairly {detail} is available: update it with your package manager"),
+        "failed" => format!("Couldn't update: {detail}"),
+        _ => format!("Pairly {current}"),
+    }
+}
+
+/// Updates: automatic or not, where they stand, and a button to check (or install) now.
+fn updates_group(daemon: Option<DaemonProxy<'static>>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Updates")
+        .description(
+            "New versions come from Pairly's GitHub releases and are installed only when \
+             they carry the project's signature.",
+        )
+        .build();
+    let auto = adw::SwitchRow::builder()
+        .title("Install updates automatically")
+        .sensitive(daemon.is_some())
+        .build();
+    let status = adw::ActionRow::builder()
+        .title("Pairly")
+        .subtitle(format!("Version {VERSION}"))
+        .build();
+    let button = gtk::Button::builder()
+        .label("Check Now")
+        .valign(gtk::Align::Center)
+        .sensitive(daemon.is_some())
+        .build();
+    status.add_suffix(&button);
+    group.add(&auto);
+    group.add(&status);
+    let Some(daemon) = daemon else {
+        return group;
+    };
+
+    // Shows the daemon's state; `available` (not installed automatically) offers Install.
+    let refresh = {
+        let (daemon, auto, status, button) =
+            (daemon.clone(), auto.clone(), status.clone(), button.clone());
+        move || {
+            let (auto, status, button) = (auto.clone(), status.clone(), button.clone());
+            let daemon = daemon.clone();
+            call(async move { daemon.update_status().await }, move |r| {
+                if let Ok((current, state, detail, on)) = r {
+                    auto.set_active(on);
+                    status.set_subtitle(&update_text(&current, &state, &detail));
+                    button.set_label(if state == "available" {
+                        "Install"
+                    } else {
+                        "Check Now"
+                    });
+                    button.set_sensitive(!matches!(state.as_str(), "checking" | "installing"));
+                }
+            });
+        }
+    };
+    refresh();
+    auto.connect_active_notify({
+        let daemon = daemon.clone();
+        move |row| {
+            let (daemon, on) = (daemon.clone(), row.is_active());
+            call(async move { daemon.set_auto_update(on).await }, |_| {});
+        }
+    });
+    button.connect_clicked({
+        let (daemon, refresh) = (daemon.clone(), refresh.clone());
+        move |b| {
+            let daemon = daemon.clone();
+            let install = b.label().as_deref() == Some("Install");
+            call(
+                async move {
+                    if install {
+                        daemon.install_update().await
+                    } else {
+                        daemon.check_for_updates().await
+                    }
+                },
+                |_| {},
+            );
+            refresh();
+        }
+    });
+    // Follow the progress while the window is open (it stops once the window is gone).
+    gtk::glib::timeout_add_seconds_local(2, {
+        let (group, refresh) = (group.clone(), refresh.clone());
+        move || {
+            if group.root().is_none() {
+                return gtk::glib::ControlFlow::Break;
+            }
+            refresh();
+            gtk::glib::ControlFlow::Continue
+        }
+    });
+    group
 }

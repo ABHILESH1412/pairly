@@ -25,3 +25,8 @@ captures/
 .vscode/
 *.swp
 .DS_Store
+
+# Tauri (Windows app): generated at build time
+pairly-windows/src-tauri/gen/
+# The update signing key's secret half never goes in the repo (only keys/update.pub).
+*.key

@@ -5,9 +5,9 @@
 //! it: `..` components are rejected and every path is resolved (symlinks included) and checked
 //! to still be inside the root.
 
+use crate::fileio::AtOffset;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::os::unix::fs::FileExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -338,6 +338,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)] // makes a symlink
     fn paths_stay_inside_the_root() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("storage");

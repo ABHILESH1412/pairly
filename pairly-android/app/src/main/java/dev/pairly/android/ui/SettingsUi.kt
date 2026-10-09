@@ -41,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -58,6 +59,8 @@ import dev.pairly.android.R
 import dev.pairly.android.device.ClipboardSync
 import dev.pairly.android.device.PairlyAccessibility
 import dev.pairly.android.share.SharePrefs
+import dev.pairly.android.update.Updater
+import kotlinx.coroutines.launch
 
 private const val SOURCE_URL = "https://github.com/ABHILESH1412/pairly"
 
@@ -73,6 +76,9 @@ fun SettingsScreen(onBack: () -> Unit, onChooseApps: () -> Unit) {
     var askBeforeReceiving by remember { mutableStateOf(SharePrefs.askBeforeReceiving(context)) }
     var autoClipboard by remember { mutableStateOf(ClipboardSync.auto(context)) }
     var renaming by remember { mutableStateOf(false) }
+    val updateStatus by Updater.status.collectAsStateWithLifecycle()
+    var autoUpdate by remember { mutableStateOf(Updater.auto(context)) }
+    val scope = rememberCoroutineScope()
     val version = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
     }
@@ -175,6 +181,49 @@ fun SettingsScreen(onBack: () -> Unit, onChooseApps: () -> Unit) {
                         trailing = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
                         onClick = onChooseApps,
                     )
+                }
+            }
+
+            item { SettingsHeader(stringResource(R.string.settings_updates)) }
+            item {
+                SettingsCard {
+                    if (!Updater.supported(context)) {
+                        SettingsRow(title = stringResource(R.string.settings_updates), body = stringResource(R.string.update_status_dev))
+                    } else {
+                        SettingsRow(
+                            title = stringResource(R.string.update_auto),
+                            body = stringResource(R.string.update_auto_body),
+                            trailing = {
+                                Switch(autoUpdate, onCheckedChange = {
+                                    autoUpdate = it
+                                    Updater.setAuto(context, it)
+                                })
+                            },
+                        )
+                        val text = when (val st = updateStatus) {
+                            Updater.Status.Idle -> stringResource(R.string.update_status_idle, version)
+                            Updater.Status.Checking -> stringResource(R.string.update_status_checking)
+                            Updater.Status.UpToDate -> stringResource(R.string.update_status_up_to_date, version)
+                            is Updater.Status.Available -> stringResource(R.string.update_status_available, st.version)
+                            is Updater.Status.Downloading -> stringResource(R.string.update_status_downloading, st.version)
+                            is Updater.Status.Installing -> stringResource(R.string.update_status_installing, st.version)
+                            is Updater.Status.Failed -> stringResource(R.string.update_status_failed, st.reason)
+                        }
+                        val busy = updateStatus is Updater.Status.Checking ||
+                            updateStatus is Updater.Status.Downloading ||
+                            updateStatus is Updater.Status.Installing
+                        val install = updateStatus is Updater.Status.Available
+                        SettingsRow(
+                            title = stringResource(R.string.app_name),
+                            body = text,
+                            trailing = {
+                                TextButton(
+                                    enabled = !busy,
+                                    onClick = { scope.launch { Updater.check(context.applicationContext, install = install) } },
+                                ) { Text(stringResource(if (install) R.string.update_install else R.string.update_check)) }
+                            },
+                        )
+                    }
                 }
             }
 
