@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.abhilesh1412.pairly"
         minSdk = 26
         targetSdk = 37
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
     }
 
     // Release signing comes from keystore.properties next to this project (never committed):

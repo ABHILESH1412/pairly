@@ -46,6 +46,14 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.5" date="2026-10-12">
+      <description>
+        <ul>
+          <li>Release script: fetch the Windows app's crates online; update the Linux lock file</li>
+          <li>Added the support for the windows app</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-10-09">
       <description>
         <ul>

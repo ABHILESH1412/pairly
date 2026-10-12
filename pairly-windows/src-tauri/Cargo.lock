@@ -3236,7 +3236,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "ciborium",
@@ -3253,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-crypto"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "blake2 0.11.0",
  "chacha20poly1305",
@@ -3268,7 +3268,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-plugins"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "pairly-core",
@@ -3283,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-proto"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "ciborium",
  "serde",
@@ -3294,7 +3294,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-transport-lan"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "if-addrs",
@@ -3310,7 +3310,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-transport-relay"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "data-encoding",
@@ -3326,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "pairly-windows"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "arboard",
