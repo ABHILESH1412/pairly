@@ -27,14 +27,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 
 /**
- * Updates from Pairly's GitHub releases. The service checks now and then; a newer release's APK
+ * Updates from Pairly's GitHub releases, read from the plain release pages rather than GitHub's
+ * API (which allows 60 requests an hour per internet address, often shared with many others on
+ * mobile and home networks). The service checks now and then; a newer release's APK
  * is downloaded, its checksum checked against the release's SHA256SUMS, and handed to Android's
  * package installer. Android itself refuses an APK not signed with the same key as the installed
  * app, so a forged download can't install. The first update needs the user to tap Install (and
@@ -53,7 +54,7 @@ object Updater {
     }
 
     private const val TAG = "PairlyUpdate"
-    private const val API = "https://api.github.com/repos/ABHILESH1412/pairly/releases/latest"
+    private const val RELEASES = "https://github.com/ABHILESH1412/pairly/releases"
     private const val PREFS = "updates"
     private const val KEY_AUTO = "auto"
     const val ACTION_INSTALL = "dev.pairly.android.update.INSTALL"
@@ -114,25 +115,27 @@ object Updater {
         }
     }
 
-    private class Release(val version: String, val apkUrl: String, val sumsUrl: String?, val apkName: String)
+    private class Release(val version: String) {
+        val apkName = "pairly-$version.apk"
+        val apkUrl = "$RELEASES/download/v$version/$apkName"
+        val sumsUrl = "$RELEASES/download/v$version/SHA256SUMS"
+    }
 
+    /** `/releases/latest` redirects to the latest release's page (drafts and pre-releases skipped). */
     private fun latest(): Release {
-        val json = JSONObject(get(API).decodeToString())
-        val version = json.getString("tag_name").removePrefix("v")
-        val assets = json.getJSONArray("assets")
-        var apk: Pair<String, String>? = null
-        var sums: String? = null
-        for (i in 0 until assets.length()) {
-            val a = assets.getJSONObject(i)
-            val name = a.getString("name")
-            val url = a.getString("browser_download_url")
-            when {
-                name == "pairly-$version.apk" -> apk = name to url
-                name == "SHA256SUMS" -> sums = url
-            }
+        val conn = URL("$RELEASES/latest").openConnection() as HttpURLConnection
+        conn.requestMethod = "HEAD"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        conn.setRequestProperty("User-Agent", "Pairly-Android")
+        try {
+            check(conn.responseCode == 200) { "GitHub answered ${conn.responseCode}" }
+            val tag = conn.url.toString().substringAfter("/releases/tag/", "")
+            check(tag.startsWith("v")) { "no release found" }
+            return Release(tag.removePrefix("v"))
+        } finally {
+            conn.disconnect()
         }
-        val (name, url) = apk ?: error("the release has no APK")
-        return Release(version, url, sums, name)
     }
 
     private fun download(context: Context, release: Release): File {
@@ -140,9 +143,12 @@ object Updater {
             deleteRecursively()
             mkdirs()
         }
-        val bytes = get(release.apkUrl)
-        release.sumsUrl?.let { url ->
-            val expected = get(url).decodeToString().lines()
+        val bytes = runCatching { get(release.apkUrl) }.getOrElse {
+            if (it is NotFound) error("the release has no APK") else throw it
+        }
+        // Android checks the APK's signature itself; the checksum also catches a broken download.
+        runCatching { get(release.sumsUrl) }.getOrNull()?.let { sums ->
+            val expected = sums.decodeToString().lines()
                 .map { it.trim().split(Regex("\\s+")) }
                 .firstOrNull { it.size == 2 && it[1].trimStart('*') == release.apkName }
                 ?.get(0)
@@ -156,15 +162,17 @@ object Updater {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 60_000
-        conn.setRequestProperty("Accept", "application/vnd.github+json")
         conn.setRequestProperty("User-Agent", "Pairly-Android")
         try {
+            if (conn.responseCode == 404) throw NotFound()
             check(conn.responseCode == 200) { "GitHub answered ${conn.responseCode}" }
             return conn.inputStream.use { it.readBytes() }
         } finally {
             conn.disconnect()
         }
     }
+
+    private class NotFound : Exception("not found")
 
     private fun install(context: Context, apk: File) {
         val installer = context.packageManager.packageInstaller

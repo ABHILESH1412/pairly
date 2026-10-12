@@ -1,7 +1,8 @@
 //! Updates from the project's GitHub releases.
 //!
 //! Every [`CHECK_EVERY`] (and soon after starting) the daemon asks GitHub for the latest
-//! release. When it's newer and automatic updates are on, it downloads the Linux bundle and its
+//! release, through the plain web pages rather than GitHub's API: the API allows 60 requests an
+//! hour per internet address, which homes sharing one address with many others run out of. When it's newer and automatic updates are on, it downloads the Linux bundle and its
 //! signature, checks the signature against the key built into this program (so neither a
 //! tampered download nor a compromised GitHub account can install anything), installs it where
 //! this copy lives, and restarts into the new version. Installs owned by the system (a package
@@ -14,7 +15,6 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use serde::Deserialize;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
@@ -73,23 +73,6 @@ pub struct Updater {
     busy: tokio::sync::Mutex<()>,
 }
 
-#[derive(Deserialize)]
-struct Release {
-    tag_name: String,
-    #[serde(default)]
-    assets: Vec<Asset>,
-    #[serde(default)]
-    draft: bool,
-    #[serde(default)]
-    prerelease: bool,
-}
-
-#[derive(Deserialize)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
-}
-
 /// `1.2.3` (or `v1.2.3`) as numbers, for comparing.
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let mut parts = v.trim().trim_start_matches('v').split('.');
@@ -130,6 +113,31 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ))
     }
+}
+
+/// The latest release's tag (`v1.2.3`): `/releases/latest` redirects to its page, and skips
+/// drafts and pre-releases.
+fn latest_tag() -> Result<String, String> {
+    let url = curl(&[
+        "--head",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{url_effective}",
+        &format!("https://github.com/{REPO}/releases/latest"),
+    ])?;
+    tag_in(&String::from_utf8_lossy(&url)).ok_or_else(|| "no release found".to_owned())
+}
+
+/// `v1.2.3` from `https://github.com/<repo>/releases/tag/v1.2.3`.
+fn tag_in(url: &str) -> Option<String> {
+    let tag = url.trim().split_once("/releases/tag/")?.1;
+    parse_version(tag).map(|_| tag.to_owned())
+}
+
+/// A file attached to a release.
+fn asset_url(version: &str, name: &str) -> String {
+    format!("https://github.com/{REPO}/releases/download/v{version}/{name}")
 }
 
 /// The install prefix of this copy (`~/.local` for `~/.local/bin/pairlyd`), if the user owns it.
@@ -228,26 +236,18 @@ impl Updater {
     async fn check(self: &Arc<Self>) {
         let _busy = self.busy.lock().await;
         self.set_status(Status::Checking).await;
-        let release = tokio::task::spawn_blocking(|| {
-            let body = curl(&[
-                "-H",
-                "Accept: application/vnd.github+json",
-                &format!("https://api.github.com/repos/{REPO}/releases/latest"),
-            ])?;
-            serde_json::from_slice::<Release>(&body).map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| e.to_string())
-        .and_then(|r| r);
-        let release = match release {
-            Ok(r) if !r.draft && !r.prerelease => r,
-            Ok(_) => return self.set_status(Status::UpToDate).await,
+        let tag = tokio::task::spawn_blocking(latest_tag)
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+        let tag = match tag {
+            Ok(tag) => tag,
             Err(e) => {
                 warn!(error = %e, "update check failed");
                 return self.set_status(Status::Failed(e)).await;
             }
         };
-        let latest = release.tag_name.trim_start_matches('v').to_owned();
+        let latest = tag.trim_start_matches('v').to_owned();
         if !newer(&latest, VERSION) {
             return self.set_status(Status::UpToDate).await;
         }
@@ -262,7 +262,7 @@ impl Updater {
         }
         if self.auto() {
             drop(_busy);
-            self.install_from(&latest, &release).await;
+            self.install(&latest).await;
         } else {
             self.set_status(Status::Available(latest.clone())).await;
             self.notify(
@@ -273,43 +273,11 @@ impl Updater {
     }
 
     async fn install(self: &Arc<Self>, version: &str) {
-        let release = tokio::task::spawn_blocking(|| {
-            let body = curl(&[
-                "-H",
-                "Accept: application/vnd.github+json",
-                &format!("https://api.github.com/repos/{REPO}/releases/latest"),
-            ])?;
-            serde_json::from_slice::<Release>(&body).map_err(|e| e.to_string())
-        })
-        .await;
-        match release {
-            Ok(Ok(r)) => self.install_from(version, &r).await,
-            Ok(Err(e)) => self.set_status(Status::Failed(e)).await,
-            Err(e) => self.set_status(Status::Failed(e.to_string())).await,
-        }
-    }
-
-    async fn install_from(self: &Arc<Self>, version: &str, release: &Release) {
         let _busy = self.busy.lock().await;
         let Some(prefix) = user_prefix() else { return };
         let bundle = format!("pairly-{version}-linux-x86_64");
-        let url = |name: &str| {
-            release
-                .assets
-                .iter()
-                .find(|a| a.name == name)
-                .map(|a| a.browser_download_url.clone())
-        };
-        let (Some(archive), Some(signature)) = (
-            url(&format!("{bundle}.tar.gz")),
-            url(&format!("{bundle}.tar.gz.minisig")),
-        ) else {
-            return self
-                .set_status(Status::Failed(
-                    "the release has no signed Linux bundle".into(),
-                ))
-                .await;
-        };
+        let archive = asset_url(version, &format!("{bundle}.tar.gz"));
+        let signature = asset_url(version, &format!("{bundle}.tar.gz.minisig"));
         self.set_status(Status::Installing(version.to_owned()))
             .await;
         let dir = self.downloads.clone();
@@ -348,7 +316,14 @@ fn install_bundle(
 ) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let signature = String::from_utf8(curl(&[signature_url])?).map_err(|e| e.to_string())?;
+    let signature = curl(&[signature_url]).map_err(|e| {
+        if e.contains("error: 404") {
+            "the release has no signed Linux bundle".to_owned()
+        } else {
+            e
+        }
+    })?;
+    let signature = String::from_utf8(signature).map_err(|e| e.to_string())?;
     let archive = curl(&[archive_url])?;
     verify(&archive, &signature, PUBLIC_KEY)?;
     let file = dir.join(format!("{bundle}.tar.gz"));
@@ -401,6 +376,15 @@ mod tests {
         assert!(!newer("v0.1.3", "0.1.3"));
         assert!(!newer("0.1.2", "0.1.3"));
         assert!(!newer("garbage", "0.1.3"));
+    }
+
+    #[test]
+    fn the_latest_tag_comes_from_the_redirect() {
+        let url = "https://github.com/ABHILESH1412/pairly/releases/tag/v0.1.5";
+        assert_eq!(tag_in(url).as_deref(), Some("v0.1.5"));
+        // No release yet: GitHub sends the releases list instead.
+        assert_eq!(tag_in("https://github.com/ABHILESH1412/pairly/releases"), None);
+        assert_eq!(tag_in("https://github.com/x/y/releases/tag/nightly"), None);
     }
 
     // A throwaway key, only for this test (not the release key).
