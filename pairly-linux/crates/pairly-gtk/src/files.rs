@@ -1,4 +1,5 @@
-//! The Files window: browse a phone's storage, download, upload, rename, delete.
+//! The Files window: browse another device's files (a phone's storage, or the folder a PC
+//! shares), download, upload, rename, delete.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -65,6 +66,8 @@ fn when(ms: i64) -> String {
 struct Ui {
     daemon: DaemonProxy<'static>,
     device: String,
+    /// The device's name, for messages.
+    device_name: String,
     window: adw::Window,
     title: adw::WindowTitle,
     toasts: adw::ToastOverlay,
@@ -152,6 +155,7 @@ pub fn open(
     let ui = Rc::new(Ui {
         daemon: daemon.clone(),
         device: device.clone(),
+        device_name: name.to_owned(),
         window: window.clone(),
         title,
         toasts,
@@ -390,7 +394,7 @@ impl Ui {
     fn pick_upload(self: &Rc<Self>) {
         let ui = self.clone();
         gtk::FileDialog::builder()
-            .title("Upload to the Phone")
+            .title(format!("Upload to {}", self.device_name))
             .accept_label("Upload")
             .build()
             .open_multiple(
@@ -468,7 +472,7 @@ impl Ui {
     fn confirm_delete(self: &Rc<Self>, path: &str, name: &str) {
         let dialog = adw::AlertDialog::new(
             Some(&format!("Delete “{name}”?")),
-            Some("It's removed from the phone for good."),
+            Some(&format!("It's removed from {} for good.", self.device_name)),
         );
         dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
         dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);

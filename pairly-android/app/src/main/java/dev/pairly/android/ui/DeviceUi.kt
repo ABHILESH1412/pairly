@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.ScreenShare
 import androidx.compose.material.icons.outlined.Adjust
 import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Mouse
@@ -85,6 +86,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pairly.android.R
 import dev.pairly.android.device.LaserPointer
+import dev.pairly.android.files.RemoteFilesActivity
 import dev.pairly.android.screen.PcScreenActivity
 import dev.pairly.android.ui.theme.Hue
 import dev.pairly.core.ffi.BatteryData
@@ -311,6 +313,11 @@ fun DeviceScreen(
                     add(
                         Tile(Icons.AutoMirrored.Outlined.ScreenShare, stringResource(R.string.action_pc_screen), on, Hue.PURPLE, {
                             PcScreenActivity.open(context, device.id, device.name)
+                        }),
+                    )
+                    add(
+                        Tile(Icons.Outlined.FolderOpen, stringResource(R.string.action_browse_files), on, Hue.AMBER, {
+                            RemoteFilesActivity.open(context, device.id, device.name)
                         }),
                     )
                 }

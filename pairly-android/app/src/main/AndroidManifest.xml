@@ -173,6 +173,11 @@
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <activity
+            android:name=".files.RemoteFilesActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Pairly" />
+
+        <activity
             android:name=".screen.PcScreenActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard"
             android:exported="false"

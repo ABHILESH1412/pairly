@@ -36,6 +36,11 @@
 //!                                                                  # (printed by pairly-relay)
 //! padding = true              # hide exact message sizes from the relay (256-byte steps)
 //!
+//! [files]
+//! share = false               # paired devices may browse this folder and download from it
+//! folder = "~"                # (hidden files are never shared)
+//! allow_changes = false       # ...and upload, rename and delete there
+//!
 //! [share]
 //! download_dir = "~/Downloads/Pairly"   # default: the XDG download folder
 //! auto_accept = true          # take files from paired devices without asking
@@ -83,6 +88,16 @@ struct File {
     power: PowerFile,
     #[serde(default)]
     screen: ScreenFile,
+    #[serde(default)]
+    files: FilesFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilesFile {
+    share: Option<bool>,
+    folder: Option<PathBuf>,
+    allow_changes: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -181,6 +196,8 @@ pub struct Config {
     pub power_from_phone: bool,
     /// Paired phones and PCs may view and control this PC's screen (same Wi-Fi only).
     pub screen_share: bool,
+    /// The folder paired devices may browse, if any.
+    pub files: crate::file_share::Sharing,
 }
 
 impl Config {
@@ -217,6 +234,11 @@ impl Config {
             input_backend: file.input.backend.unwrap_or_default(),
             power_from_phone: file.power.from_phone.unwrap_or(true),
             screen_share: file.screen.share_with_phones.unwrap_or(true),
+            files: crate::file_share::Sharing {
+                on: file.files.share.unwrap_or(false),
+                folder: file.files.folder.as_deref().map_or_else(home, expand_home),
+                allow_changes: file.files.allow_changes.unwrap_or(false),
+            },
             name: file.name.unwrap_or_else(hostname),
             device_type,
             data_dir: file
@@ -261,16 +283,29 @@ pub fn file_path(path: Option<&Path>) -> PathBuf {
 /// Set this PC's name in the config file at `path`, keeping everything else (and the comments)
 /// as it is: a top-level `name = …` line is replaced, or one is added at the top.
 pub fn save_name(path: &Path, name: &str) -> Result<()> {
-    edit(path, None, "name", Some(name))
+    edit(path, None, "name", Some(name.into()))
 }
 
 /// Save the relay address (or remove it), keeping the rest of the file as it is.
 pub fn save_relay(path: &Path, address: Option<&str>) -> Result<()> {
-    edit(path, Some("relay"), "address", address)
+    edit(path, Some("relay"), "address", address.map(Into::into))
+}
+
+/// Save the file sharing settings.
+pub fn save_file_sharing(path: &Path, sharing: &crate::file_share::Sharing) -> Result<()> {
+    edit(path, Some("files"), "share", Some(sharing.on.into()))?;
+    let folder = sharing.folder.to_string_lossy().into_owned();
+    edit(path, Some("files"), "folder", Some(folder.into()))?;
+    edit(
+        path,
+        Some("files"),
+        "allow_changes",
+        Some(sharing.allow_changes.into()),
+    )
 }
 
 /// Set (or with `None`, remove) `key` at the top of the file or in `[section]`.
-fn edit(path: &Path, section: Option<&str>, key: &str, value: Option<&str>) -> Result<()> {
+fn edit(path: &Path, section: Option<&str>, key: &str, value: Option<toml::Value>) -> Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -289,8 +324,8 @@ fn edit(path: &Path, section: Option<&str>, key: &str, value: Option<&str>) -> R
     Ok(())
 }
 
-fn edited(text: &str, section: Option<&str>, key: &str, value: Option<&str>) -> Vec<String> {
-    let line = value.map(|v| format!("{key} = {}", toml::Value::String(v.to_owned())));
+fn edited(text: &str, section: Option<&str>, key: &str, value: Option<toml::Value>) -> Vec<String> {
+    let line = value.map(|v| format!("{key} = {v}"));
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let is_header = |l: &str| l.trim_start().starts_with('[');
     // The lines of the wanted table: the top (before the first header) or `[section]`.
@@ -447,19 +482,49 @@ mod tests {
 
     #[test]
     fn the_relay_address_is_saved_in_its_section() {
-        let text = "name = \"Desk\"\n\n[relay]\npadding = true\n\n[screen]\nshare_with_phones = true\n";
-        let set = edited(text, Some("relay"), "address", Some("wss://t@r.example.com")).join("\n");
-        assert!(set.contains("[relay]\npadding = true\naddress = \"wss://t@r.example.com\"\n\n[screen]"), "{set}");
-        let changed = edited(&set, Some("relay"), "address", Some("wss://u@r.example.com")).join("\n");
-        assert!(changed.contains("address = \"wss://u@r.example.com\"") && !changed.contains("wss://t@"));
+        let text =
+            "name = \"Desk\"\n\n[relay]\npadding = true\n\n[screen]\nshare_with_phones = true\n";
+        let set = edited(
+            text,
+            Some("relay"),
+            "address",
+            Some("wss://t@r.example.com".into()),
+        )
+        .join("\n");
+        assert!(
+            set.contains(
+                "[relay]\npadding = true\naddress = \"wss://t@r.example.com\"\n\n[screen]"
+            ),
+            "{set}"
+        );
+        let changed = edited(
+            &set,
+            Some("relay"),
+            "address",
+            Some("wss://u@r.example.com".into()),
+        )
+        .join("\n");
+        assert!(
+            changed.contains("address = \"wss://u@r.example.com\"")
+                && !changed.contains("wss://t@")
+        );
         let removed = edited(&changed, Some("relay"), "address", None).join("\n");
         assert!(!removed.contains("address"), "{removed}");
         assert!(removed.contains("share_with_phones = true"));
 
         // No [relay] yet: added at the end.
-        let added = edited("name = \"Desk\"", Some("relay"), "address", Some("wss://t@h")).join("\n");
+        let added = edited(
+            "name = \"Desk\"",
+            Some("relay"),
+            "address",
+            Some("wss://t@h".into()),
+        )
+        .join("\n");
         assert_eq!(added, "name = \"Desk\"\n\n[relay]\naddress = \"wss://t@h\"");
-        assert_eq!(edited("name = \"Desk\"", Some("relay"), "address", None), ["name = \"Desk\""]);
+        assert_eq!(
+            edited("name = \"Desk\"", Some("relay"), "address", None),
+            ["name = \"Desk\""]
+        );
         assert!(toml::from_str::<File>(&added).is_ok());
     }
 

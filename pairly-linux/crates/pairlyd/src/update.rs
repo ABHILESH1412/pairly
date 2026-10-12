@@ -383,7 +383,10 @@ mod tests {
         let url = "https://github.com/ABHILESH1412/pairly/releases/tag/v0.1.5";
         assert_eq!(tag_in(url).as_deref(), Some("v0.1.5"));
         // No release yet: GitHub sends the releases list instead.
-        assert_eq!(tag_in("https://github.com/ABHILESH1412/pairly/releases"), None);
+        assert_eq!(
+            tag_in("https://github.com/ABHILESH1412/pairly/releases"),
+            None
+        );
         assert_eq!(tag_in("https://github.com/x/y/releases/tag/nightly"), None);
     }
 

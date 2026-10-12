@@ -624,6 +624,34 @@ fn file_from_fd(fd: i32) -> Result<File, PairlyError> {
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+// ----- browsing another device's files -----------------------------------------------------
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FileEntryData {
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+    pub modified_ms: i64,
+}
+
+impl From<pairly_plugins::files::Entry> for FileEntryData {
+    fn from(e: pairly_plugins::files::Entry) -> Self {
+        Self {
+            name: e.name,
+            dir: e.dir,
+            size: e.size,
+            modified_ms: e.modified_ms,
+        }
+    }
+}
+
+/// Implemented in Kotlin: how a download is going (bytes so far, of about `total`). Called on a
+/// Rust thread.
+#[uniffi::export(with_foreign)]
+pub trait DownloadProgress: Send + Sync {
+    fn progress(&self, done: u64, total: u64);
+}
+
 // ----- the node ----------------------------------------------------------------------------
 
 #[derive(uniffi::Object)]
@@ -642,6 +670,7 @@ pub struct Node {
     input: Arc<pairly_plugins::input::InputPlugin>,
     power: Arc<pairly_plugins::power::PowerPlugin>,
     screen: Arc<pairly_plugins::screen::ScreenPlugin>,
+    files: Arc<pairly_plugins::files::FilesPlugin>,
     forward: AbortHandle,
 }
 
@@ -806,6 +835,7 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
     let calls = parts.telephony.ok_or_else(|| missing("telephony"))?;
     let contacts = parts.contacts.ok_or_else(|| missing("contacts"))?;
     let files = parts.files.ok_or_else(|| missing("files"))?;
+    let files = pairly_plugins::files::FilesPlugin::new(Arc::new(phone::ForeignFiles(files)));
     let screen = pairly_plugins::screen::ScreenPlugin::new(Arc::new(phone::ForeignScreen(
         parts.screen.ok_or_else(|| missing("screen"))?,
     )));
@@ -859,9 +889,7 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
         .plugin(commands.clone())
         .plugin(input.clone())
         .plugin(contacts)
-        .plugin(pairly_plugins::files::FilesPlugin::new(Arc::new(
-            phone::ForeignFiles(files),
-        )))
+        .plugin(files.clone())
         .plugin(power.clone())
         .plugin(screen.clone())
         .start()
@@ -891,6 +919,7 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
         input,
         power,
         screen,
+        files,
         forward: forward.abort_handle(),
     })
 }
@@ -1158,6 +1187,53 @@ impl Node {
     /// The laser pointer on a PC's screen: show it, move it by a fraction of the screen
     /// (`dx`, `dy`, from the gyroscope), hide it.
     /// Ask a PC to show its screen here (`start`), or stop. Same Wi-Fi only.
+    /// A folder's entries on another device (`""` is the top of what it shares): folders
+    /// first, then by name.
+    pub async fn files_list(
+        &self,
+        device: String,
+        path: String,
+    ) -> Result<Vec<FileEntryData>, PairlyError> {
+        let (files, peer) = (self.files.clone(), parse_id(&device)?);
+        let entries = runtime()
+            .spawn(async move { files.list(peer, &path).await })
+            .await
+            .map_err(failed)??;
+        Ok(entries.into_iter().map(Into::into).collect())
+    }
+
+    /// Download a file from another device into `fd` (a writable descriptor; this takes
+    /// ownership). `size` is its size as listed. Returns the bytes written.
+    pub async fn files_download(
+        &self,
+        device: String,
+        path: String,
+        size: u64,
+        fd: i32,
+        progress: Arc<dyn DownloadProgress>,
+    ) -> Result<u64, PairlyError> {
+        use std::io::Write;
+        let (files, peer) = (self.files.clone(), parse_id(&device)?);
+        let mut out = file_from_fd(fd)?;
+        runtime()
+            .spawn(async move {
+                let done = files
+                    .download(
+                        peer,
+                        &path,
+                        size,
+                        |data| out.write_all(data),
+                        |done| progress.progress(done, size.max(done)),
+                    )
+                    .await?;
+                out.sync_all()?;
+                Ok::<_, CoreError>(done)
+            })
+            .await
+            .map_err(failed)?
+            .map_err(Into::into)
+    }
+
     pub fn screen_request(&self, device: String, start: bool) -> Result<(), PairlyError> {
         use pairly_plugins::screen::ScreenAction;
         let action = if start {

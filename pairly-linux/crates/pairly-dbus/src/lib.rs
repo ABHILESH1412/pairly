@@ -178,6 +178,10 @@ pub trait Daemon {
     fn set_name(&self, name: &str) -> zbus::Result<()>;
     /// Stop the daemon (every device disconnects).
     fn quit(&self) -> zbus::Result<()>;
+    /// (on, folder, allow changes): the folder paired devices may browse.
+    fn file_sharing(&self) -> zbus::Result<(bool, String, bool)>;
+    /// Share a folder with paired devices (or stop); takes effect at once.
+    fn set_file_sharing(&self, on: bool, folder: &str, allow_changes: bool) -> zbus::Result<()>;
     /// The relay address this PC uses, or empty for none.
     fn relay(&self) -> zbus::Result<String>;
     /// Use a relay (`wss://…` or `pairly-relay://…`), or none with an empty address. The

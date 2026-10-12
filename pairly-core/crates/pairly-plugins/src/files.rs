@@ -1,9 +1,10 @@
-//! Browse a phone's storage from the PC: list folders, read and write files in chunks, delete,
-//! create folders and rename.
+//! Browse another device's files: list folders, read and write files in chunks, delete, create
+//! folders and rename. A phone shares its storage; a PC shares a folder its user picks, if they
+//! turn sharing on, read-only unless they allow changes.
 //!
-//! The phone side serves one root (its shared storage) and refuses any path that would leave
-//! it: `..` components are rejected and every path is resolved (symlinks included) and checked
-//! to still be inside the root.
+//! The sharing side serves one root and refuses any path that would leave it: `..` components
+//! are rejected and every path is resolved (symlinks included) and checked to still be inside
+//! the root.
 
 use crate::fileio::AtOffset;
 use std::collections::HashMap;
@@ -26,6 +27,11 @@ use crate::peers::{Peers, lock};
 /// Bytes per read or write request.
 pub const CHUNK: u32 = 512 * 1024;
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Reads queue behind each other on slow links (Bluetooth): more time for those.
+const READ_TIMEOUT: Duration = Duration::from_secs(90);
+/// Reads in flight during a download. Each one costs a round trip, which over the internet
+/// relay is about half a second: one at a time would cap a download near 1 MB/s.
+const READS_IN_FLIGHT: usize = 4;
 const MAX_ENTRIES: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +105,55 @@ pub trait FilesHost: Send + Sync + 'static {
     fn root(&self) -> std::result::Result<PathBuf, String> {
         Err("this device doesn't share its files".into())
     }
+
+    /// Whether paired devices may upload, rename and delete (else they can only look and
+    /// download).
+    fn allow_changes(&self) -> bool {
+        true
+    }
+
+    /// Whether hidden files (`.name`, and on Windows hidden or system files) are shown.
+    fn show_hidden(&self) -> bool {
+        true
+    }
+}
+
+/// What a request may do in a share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rules {
+    pub allow_changes: bool,
+    pub show_hidden: bool,
+}
+
+impl Rules {
+    pub const ALL: Self = Self {
+        allow_changes: true,
+        show_hidden: true,
+    };
+
+    fn of(host: &dyn FilesHost) -> Self {
+        Self {
+            allow_changes: host.allow_changes(),
+            show_hidden: host.show_hidden(),
+        }
+    }
+}
+
+fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+#[cfg(windows)]
+fn is_hidden_entry(name: &str, meta: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const HIDDEN: u32 = 0x2;
+    const SYSTEM: u32 = 0x4;
+    is_hidden_name(name) || meta.file_attributes() & (HIDDEN | SYSTEM) != 0
+}
+
+#[cfg(not(windows))]
+fn is_hidden_entry(name: &str, _: &fs::Metadata) -> bool {
+    is_hidden_name(name)
 }
 
 type Answer = std::result::Result<FileAnswer, String>;
@@ -137,16 +192,36 @@ pub fn resolve(root: &Path, rel: &str, must_exist: bool) -> std::result::Result<
     }
 }
 
-fn run(root: &Path, op: FileOp) -> Answer {
+/// Run a request as `rules` allow.
+pub fn run(root: &Path, op: FileOp, rules: Rules) -> Answer {
     let err = |e: std::io::Error| e.to_string();
+    let paths: Vec<&str> = match &op {
+        FileOp::List { path }
+        | FileOp::Read { path, .. }
+        | FileOp::Write { path, .. }
+        | FileOp::Delete { path }
+        | FileOp::Mkdir { path } => vec![path],
+        FileOp::Rename { from, to } => vec![from, to],
+    };
+    if !rules.show_hidden && paths.iter().any(|p| p.split('/').any(is_hidden_name)) {
+        return Err("not allowed: hidden files aren't shared".into());
+    }
+    let changes = !matches!(op, FileOp::List { .. } | FileOp::Read { .. });
+    if changes && !rules.allow_changes {
+        return Err("this device only lets you look and download".into());
+    }
     match op {
         FileOp::List { path } => {
             let dir = resolve(root, &path, true)?;
             let mut entries = Vec::new();
             for e in fs::read_dir(dir).map_err(err)?.flatten().take(MAX_ENTRIES) {
                 let Ok(meta) = e.metadata() else { continue };
+                let name = e.file_name().to_string_lossy().into_owned();
+                if !rules.show_hidden && is_hidden_entry(&name, &meta) {
+                    continue;
+                }
                 entries.push(Entry {
-                    name: e.file_name().to_string_lossy().into_owned(),
+                    name,
                     dir: meta.is_dir(),
                     size: if meta.is_dir() { 0 } else { meta.len() },
                     modified_ms: meta
@@ -226,6 +301,10 @@ impl FilesPlugin {
 
     /// Run `op` on a peer's files.
     pub async fn ask(&self, peer: DeviceId, op: FileOp) -> Result<FileAnswer> {
+        let timeout = match op {
+            FileOp::Read { .. } => READ_TIMEOUT,
+            _ => ANSWER_TIMEOUT,
+        };
         let req = self.next_req.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         lock(&self.pending).insert(req, tx);
@@ -239,7 +318,7 @@ impl FilesPlugin {
             lock(&self.pending).remove(&req);
             return Err(e);
         }
-        let answer = tokio::time::timeout(ANSWER_TIMEOUT, rx).await;
+        let answer = tokio::time::timeout(timeout, rx).await;
         lock(&self.pending).remove(&req);
         answer
             .map_err(|_| CoreError::Timeout)?
@@ -273,6 +352,46 @@ impl FilesPlugin {
             _ => Err(CoreError::Violation("wrong answer")),
         }
     }
+
+    /// Download a whole file (`size` as listed), handing each piece to `write` in order and the
+    /// bytes so far to `progress`. Several pieces are requested at once. Returns the size.
+    pub async fn download(
+        &self,
+        peer: DeviceId,
+        path: &str,
+        size: u64,
+        mut write: impl FnMut(&[u8]) -> std::io::Result<()>,
+        mut progress: impl FnMut(u64),
+    ) -> Result<u64> {
+        use futures::StreamExt;
+        let chunk = u64::from(CHUNK);
+        let pieces = size.div_ceil(chunk).max(1);
+        let mut reads = futures::stream::iter(0..pieces)
+            .map(|i| self.read(peer, path, i * chunk, CHUNK))
+            .buffered(READS_IN_FLIGHT);
+        let mut done = 0u64;
+        let mut more = false;
+        while let Some(data) = reads.next().await {
+            let data = data?;
+            write(&data)?;
+            done += data.len() as u64;
+            progress(done);
+            more = data.len() as u64 == chunk;
+            if !more {
+                break;
+            }
+        }
+        drop(reads);
+        // The file grew since it was listed: read on to its end.
+        while more {
+            let data = self.read(peer, path, done, CHUNK).await?;
+            write(&data)?;
+            done += data.len() as u64;
+            progress(done);
+            more = data.len() as u64 == chunk;
+        }
+        Ok(done)
+    }
 }
 
 #[async_trait]
@@ -303,7 +422,8 @@ impl Plugin for FilesPlugin {
                             FileOp::Read { .. } => Priority::Bulk,
                             _ => Priority::Interactive,
                         };
-                        let answer = host.root().and_then(|root| run(&root, r.op));
+                        let rules = Rules::of(host.as_ref());
+                        let answer = host.root().and_then(|root| run(&root, r.op, rules));
                         if let Err(e) = &answer {
                             debug!(error = %e, "file request refused");
                         }
@@ -365,7 +485,8 @@ mod tests {
                     offset: 0,
                     data: b"hello".to_vec(),
                     create: true
-                }
+                },
+                Rules::ALL
             ),
             Ok(FileAnswer::Done)
         );
@@ -377,7 +498,8 @@ mod tests {
                     offset: 5,
                     data: b" world".to_vec(),
                     create: false
-                }
+                },
+                Rules::ALL
             ),
             Ok(FileAnswer::Done)
         );
@@ -388,7 +510,8 @@ mod tests {
                     path: "DCIM/a.txt".into(),
                     offset: 6,
                     len: 100
-                }
+                },
+                Rules::ALL
             ),
             Ok(FileAnswer::Data(b"world".to_vec()))
         );
@@ -397,6 +520,7 @@ mod tests {
             FileOp::List {
                 path: "DCIM".into(),
             },
+            Rules::ALL,
         ) else {
             panic!()
         };
@@ -407,23 +531,97 @@ mod tests {
                 FileOp::Rename {
                     from: "DCIM/a.txt".into(),
                     to: "DCIM/b.txt".into()
-                }
+                },
+                Rules::ALL
             ),
             Ok(FileAnswer::Done)
         );
         assert_eq!(
-            run(&root, FileOp::Mkdir { path: "New".into() }),
+            run(&root, FileOp::Mkdir { path: "New".into() }, Rules::ALL),
             Ok(FileAnswer::Done)
         );
-        assert!(run(&root, FileOp::Delete { path: "".into() }).is_err());
+        assert!(run(&root, FileOp::Delete { path: "".into() }, Rules::ALL).is_err());
         assert_eq!(
             run(
                 &root,
                 FileOp::Delete {
                     path: "DCIM/b.txt".into()
-                }
+                },
+                Rules::ALL
             ),
             Ok(FileAnswer::Done)
         );
+    }
+
+    #[test]
+    fn read_only_shares_and_hidden_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".ssh")).unwrap();
+        fs::write(root.join(".ssh/id"), "secret").unwrap();
+        fs::write(root.join("notes.txt"), "hi").unwrap();
+        let pc = Rules {
+            allow_changes: false,
+            show_hidden: false,
+        };
+
+        let Ok(FileAnswer::Entries(e)) = run(root, FileOp::List { path: "".into() }, pc) else {
+            panic!()
+        };
+        let names: Vec<&str> = e.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["notes.txt"], "hidden entries aren't listed");
+        let read = |path: &str| FileOp::Read {
+            path: path.into(),
+            offset: 0,
+            len: 10,
+        };
+        assert_eq!(
+            run(root, read("notes.txt"), pc),
+            Ok(FileAnswer::Data(b"hi".to_vec()))
+        );
+        assert!(
+            run(root, read(".ssh/id"), pc).is_err(),
+            "hidden files can't be read"
+        );
+        assert!(
+            run(
+                root,
+                FileOp::List {
+                    path: ".ssh".into()
+                },
+                pc
+            )
+            .is_err()
+        );
+
+        // Read-only: no changes of any kind.
+        for op in [
+            FileOp::Write {
+                path: "new.txt".into(),
+                offset: 0,
+                data: b"x".to_vec(),
+                create: true,
+            },
+            FileOp::Delete {
+                path: "notes.txt".into(),
+            },
+            FileOp::Mkdir { path: "d".into() },
+            FileOp::Rename {
+                from: "notes.txt".into(),
+                to: "n.txt".into(),
+            },
+        ] {
+            assert!(run(root, op, pc).is_err());
+        }
+        assert!(root.join("notes.txt").exists() && !root.join("new.txt").exists());
+
+        // With changes allowed, hidden names still can't be created.
+        let open = Rules {
+            allow_changes: true,
+            ..pc
+        };
+        let mkdir = |path: &str| FileOp::Mkdir { path: path.into() };
+        assert!(run(root, mkdir(".config"), open).is_err());
+        assert_eq!(run(root, mkdir("d"), open), Ok(FileAnswer::Done));
     }
 }

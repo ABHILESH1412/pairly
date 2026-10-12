@@ -115,6 +115,39 @@ impl DaemonIface {
         Ok(())
     }
 
+    /// (on, folder, allow changes): the folder paired devices may browse.
+    async fn file_sharing(&self) -> (bool, String, bool) {
+        let s = self.features.file_share.get();
+        (s.on, s.folder.display().to_string(), s.allow_changes)
+    }
+
+    /// Share a folder with paired devices (or stop). Takes effect at once and is saved in the
+    /// config file.
+    async fn set_file_sharing(
+        &self,
+        on: bool,
+        folder: &str,
+        allow_changes: bool,
+    ) -> fdo::Result<()> {
+        let folder = std::path::PathBuf::from(folder.trim());
+        if !folder.is_absolute() || !folder.is_dir() {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{} isn't a folder",
+                folder.display()
+            )));
+        }
+        let sharing = crate::file_share::Sharing {
+            on,
+            folder,
+            allow_changes,
+        };
+        crate::config::save_file_sharing(&self.config_path, &sharing)
+            .map_err(|e| failed(format!("{e:#}")))?;
+        tracing::info!(on, folder = %sharing.folder.display(), allow_changes, "file sharing changed");
+        self.features.file_share.set(sharing);
+        Ok(())
+    }
+
     /// The relay address this PC uses, or empty for none.
     async fn relay(&self) -> String {
         self.relay.clone().unwrap_or_default()
@@ -417,21 +450,31 @@ impl DaemonIface {
         let result = async {
             use std::io::Write;
             let mut out = std::fs::File::create(&part).map_err(failed)?;
-            let mut offset = 0u64;
-            loop {
-                let chunk = self
-                    .features
-                    .files
-                    .read(peer, path, offset, pairly_plugins::files::CHUNK)
-                    .await
-                    .map_err(failed)?;
-                if chunk.is_empty() {
-                    break;
+            // Progress signals at most every 1/4 s, sent from here (the download runs on).
+            let (tx, mut rx) = tokio::sync::watch::channel(0u64);
+            let done = {
+                let download = self.features.files.download(
+                    peer,
+                    path,
+                    size,
+                    |data| out.write_all(data),
+                    |done| {
+                        let _ = tx.send(done);
+                    },
+                );
+                tokio::pin!(download);
+                loop {
+                    tokio::select! {
+                        result = &mut download => break result.map_err(failed)?,
+                        () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                            let done = *rx.borrow_and_update();
+                            let _ = Self::files_progress(&emitter, id, path, done, size.max(done))
+                                .await;
+                        }
+                    }
                 }
-                out.write_all(&chunk).map_err(failed)?;
-                offset += chunk.len() as u64;
-                let _ = Self::files_progress(&emitter, id, path, offset, size.max(offset)).await;
-            }
+            };
+            let _ = Self::files_progress(&emitter, id, path, done, size.max(done)).await;
             out.sync_all().map_err(failed)?;
             std::fs::rename(&part, &target).map_err(failed)
         }
@@ -440,7 +483,7 @@ impl DaemonIface {
             let _ = std::fs::remove_file(&part);
         }
         result?;
-        tracing::info!(device = id, path, "downloaded a file from the phone");
+        tracing::info!(device = id, path, "downloaded a file");
         Ok(target.display().to_string())
     }
 

@@ -156,6 +156,16 @@
     <string name="action_pointer">Pointer (hold)</string>
     <string name="channel_screen">Screen sharing</string>
     <string name="action_pc_screen">PC Screen</string>
+    <string name="action_browse_files">Browse Files</string>
+    <string name="files_off">Pairly is off</string>
+    <string name="files_refresh">Refresh</string>
+    <string name="files_retry">Try again</string>
+    <string name="files_empty">This folder is empty</string>
+    <string name="files_downloading">Downloading %1$s</string>
+    <string name="files_saved">Saved %1$s in Downloads/Pairly</string>
+    <string name="files_open">Open</string>
+    <string name="files_no_app">No app here opens this kind of file</string>
+    <string name="files_download_failed">Couldn\'t download %1$s: %2$s</string>
     <string name="pc_screen_rotate">Turn the view</string>
     <string name="pc_screen_zoom">Zoom in</string>
     <string name="pc_screen_fit">Fit to screen</string>

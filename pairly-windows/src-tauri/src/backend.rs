@@ -389,7 +389,7 @@ impl Backend {
             sms: SmsPlugin::new(host.clone()),
             telephony: TelephonyPlugin::new(host.clone()),
             contacts: ContactsPlugin::new(Arc::new(NoShare)),
-            files: FilesPlugin::new(Arc::new(NoShare)),
+            files: FilesPlugin::new(host.clone()),
             command: CommandPlugin::new(Arc::new(CommandsHost(self.commands.clone()))),
             screen: ScreenPlugin::new(host.clone()),
         };

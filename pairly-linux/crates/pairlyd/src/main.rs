@@ -9,6 +9,7 @@ mod config;
 mod contacts;
 mod dbus;
 mod desktop_env;
+mod file_share;
 mod input;
 mod keyring;
 mod laser;
@@ -36,7 +37,7 @@ use pairly_plugins::battery::{BatteryPlugin, BatteryState};
 use pairly_plugins::clipboard::ClipboardPlugin;
 use pairly_plugins::command::CommandPlugin;
 use pairly_plugins::contacts::{ContactsHost, ContactsPlugin};
-use pairly_plugins::files::{FilesHost, FilesPlugin};
+use pairly_plugins::files::FilesPlugin;
 use pairly_plugins::findmy::FindMyPlugin;
 use pairly_plugins::input::InputPlugin;
 use pairly_plugins::media::MediaPlugin;
@@ -80,12 +81,10 @@ pub struct Features {
     pub contacts: Arc<ContactsPlugin>,
     pub power: Arc<pairly_plugins::power::PowerPlugin>,
     pub files: Arc<FilesPlugin>,
+    /// The folder this PC shares, if any.
+    pub file_share: Arc<file_share::FileShare>,
     pub screen_host: Arc<screen::LinuxScreen>,
 }
-
-/// The PC doesn't share its files; it only browses phones.
-struct NoFiles;
-impl FilesHost for NoFiles {}
 
 /// The PC has no contacts of its own; it only asks phones for theirs.
 struct NoContacts;
@@ -187,6 +186,7 @@ async fn main() -> Result<()> {
     let screen_plugin = pairly_plugins::screen::ScreenPlugin::new(screen_host.clone());
     screen_host.set_plugin(&screen_plugin);
     commands.set_plugin(&command);
+    let file_share = Arc::new(file_share::FileShare::new(config.files.clone()));
     let features = Features {
         notifications: NotificationPlugin::new(Arc::new(notification_host)),
         clipboard: ClipboardPlugin::new(platform.clone()),
@@ -203,7 +203,8 @@ async fn main() -> Result<()> {
         power: pairly_plugins::power::PowerPlugin::new(Arc::new(power::LinuxPower {
             allowed: config.power_from_phone,
         })),
-        files: FilesPlugin::new(Arc::new(NoFiles)),
+        files: FilesPlugin::new(file_share.clone()),
+        file_share,
         screen_host,
     };
     let node = builder
@@ -355,7 +356,11 @@ async fn restart_with_systemd(conn: &Connection) -> bool {
             &std::process::id(),
         )
         .await
-        .and_then(|reply| reply.body().deserialize::<zbus::zvariant::OwnedObjectPath>());
+        .and_then(|reply| {
+            reply
+                .body()
+                .deserialize::<zbus::zvariant::OwnedObjectPath>()
+        });
     let restarted = match unit {
         Ok(unit) => conn
             .call_method(

@@ -1,5 +1,6 @@
 //! The node's view of this PC: every feature's hooks, answered by the backend.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -22,12 +23,46 @@ use tauri::Emitter;
 use crate::backend::{Backend, data_url, lock, now_ms};
 use crate::platform::{self, toast};
 
-/// The PC shares neither its files nor contacts; it only browses phones'.
+/// The PC has no contacts of its own; it only asks phones for theirs.
 pub struct NoShare;
-impl FilesHost for NoShare {}
 impl ContactsHost for NoShare {}
 
+/// The user's own folder (`C:\\Users\\name`).
+pub fn home_folder() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map_or_else(|| PathBuf::from("."), PathBuf::from)
+}
+
 pub struct Host(pub Weak<Backend>);
+
+/// The folder this PC shares with paired devices (off unless switched on in Settings;
+/// read-only unless changes are allowed; hidden and system files are never shared).
+impl FilesHost for Host {
+    fn root(&self) -> Result<PathBuf, String> {
+        let settings = self.0.upgrade().ok_or("Pairly is stopping")?.settings();
+        if !settings.share_files {
+            return Err(
+                "this PC doesn't share its files (turn it on in Pairly's settings there)".into(),
+            );
+        }
+        let folder = settings
+            .share_folder
+            .map_or_else(home_folder, PathBuf::from);
+        if !folder.is_dir() {
+            return Err(format!("the shared folder {} is gone", folder.display()));
+        }
+        Ok(folder)
+    }
+
+    fn allow_changes(&self) -> bool {
+        self.0.upgrade().is_some_and(|b| b.settings().share_changes)
+    }
+
+    fn show_hidden(&self) -> bool {
+        false
+    }
+}
 
 impl Host {
     fn with(&self, f: impl FnOnce(&Arc<Backend>)) {

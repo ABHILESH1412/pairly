@@ -1971,6 +1971,7 @@ name = "pairly-plugins"
 version = "0.1.7"
 dependencies = [
  "async-trait",
+ "futures",
  "pairly-core",
  "pairly-proto",
  "rand",

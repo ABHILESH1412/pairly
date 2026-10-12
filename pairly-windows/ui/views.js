@@ -387,7 +387,7 @@ Views.contacts = {
   },
 };
 
-// ----- the phone's files ---------------------------------------------------------------------
+// ----- a device's files (a phone's storage, or the folder a PC shares) ---------------------
 
 Views.files = {
   title: (d) => `Files · ${d.name}`,
@@ -397,6 +397,7 @@ Views.files = {
 
   mount(page, d) {
     this.device = d.id;
+    this.name = d.name;
     this.path = "";
     page.append(pane(`<div class="page-inner">
       <div class="card"><div class="row toolbar">
@@ -414,7 +415,7 @@ Views.files = {
     $("f-refresh").addEventListener("click", () => this.load());
     $("f-mkdir").addEventListener("click", () => this.mkdir());
     $("f-upload").addEventListener("click", async () => {
-      const picked = await tauri.dialog.open({ multiple: true, title: "Upload to the phone" });
+      const picked = await tauri.dialog.open({ multiple: true, title: `Upload to ${this.name}` });
       const paths = picked ? (Array.isArray(picked) ? picked : [picked]) : [];
       if (paths.length) this.upload(paths);
     });
@@ -435,7 +436,7 @@ Views.files = {
     const crumbs = $("f-crumbs");
     if (crumbs) {
       const parts = path ? path.split("/") : [];
-      crumbs.innerHTML = [`<button class="crumb" data-go="">Phone</button>`,
+      crumbs.innerHTML = [`<button class="crumb" data-go="">${esc(this.name)}</button>`,
         ...parts.map((p, i) => `<span>›</span><button class="crumb" data-go="${esc(parts.slice(0, i + 1).join("/"))}">${esc(p)}</button>`)].join("");
       crumbs.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => this.go(b.dataset.go)));
     }
@@ -544,7 +545,7 @@ Views.files = {
   },
 
   remove(e) {
-    openDialog(`<h2>Delete ${esc(e.name)}?</h2><p>${e.dir ? "The folder and everything in it are" : "It's"} deleted from the phone.</p>
+    openDialog(`<h2>Delete ${esc(e.name)}?</h2><p>${e.dir ? "The folder and everything in it are" : "It's"} deleted from ${esc(this.name)}.</p>
       <div class="actions"><button class="btn" id="cancel-dialog">Cancel</button><button class="btn primary" id="f-do">Delete</button></div>`);
     $("f-do").addEventListener("click", async () => {
       closeDialog();

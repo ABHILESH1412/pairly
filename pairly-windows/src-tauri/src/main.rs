@@ -143,11 +143,24 @@ async fn set_option(backend: Backends<'_>, key: String, on: bool) -> Answer {
         "power_from_phone" => s.power_from_phone = on,
         "share_screen" => s.share_screen = on,
         "open_links" => s.open_links = on,
+        "share_files" => s.share_files = on,
+        "share_changes" => s.share_changes = on,
         _ => {}
     });
     if restart && backend.settings().enabled {
         backend.inner().restart().await.map_err(text)?;
     }
+    backend.emit();
+    Ok(())
+}
+
+/// The folder paired devices may browse.
+#[tauri::command]
+fn set_share_folder(backend: Backends<'_>, folder: String) -> Answer {
+    if !std::path::Path::new(&folder).is_dir() {
+        return Err(format!("{folder} isn't a folder"));
+    }
+    backend.change_settings(|s| s.share_folder = Some(folder));
     backend.emit();
     Ok(())
 }
@@ -535,6 +548,7 @@ fn main() {
             rename,
             set_theme,
             set_option,
+            set_share_folder,
             autostart,
             check_update,
             set_relay,

@@ -42,6 +42,12 @@ pub struct Settings {
     pub share_screen: bool,
     /// Open links sent from the phone straight away (else: a notification to open them).
     pub open_links: bool,
+    /// Paired devices may browse a folder of this PC and download from it.
+    pub share_files: bool,
+    /// That folder (None: the user's own folder).
+    pub share_folder: Option<String>,
+    /// ...and upload, rename and delete there.
+    pub share_changes: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +70,9 @@ impl Default for Settings {
             power_from_phone: true,
             share_screen: true,
             open_links: true,
+            share_files: false,
+            share_folder: None,
+            share_changes: false,
         }
     }
 }

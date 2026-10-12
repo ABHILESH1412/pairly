@@ -253,6 +253,7 @@ function devicePage(d) {
       ${phone ? tile("💬", "Messages", "Read and send texts", "teal", on, "messages") : ""}
       ${phone ? tile("📇", "Contacts & Calls", "Call or text from here", "coral", on, "contacts") : ""}
       ${phone ? tile("🗂️", "Browse Files", "The phone's storage", "amber", on, "files") : ""}
+      ${pc ? tile("🗂️", "Browse Files", "The folder it shares", "amber", on, "files") : ""}
       ${pc ? tile("🖥️", "PC Screen", lan || !on ? "See and control it" : "Needs the same Wi-Fi", "purple", on && lan, "screen") : ""}
       ${tile("📤", "Send Files", "Or drop them on this window", "blue", on, "send-files")}
       ${tile("🔗", "Link or Text", "Opens or copies there", "blue", on, "text")}
@@ -339,6 +340,11 @@ function settingsPage() {
       ${row("Received files", "Saved in Downloads\\Pairly", `<button class="btn" data-action="downloads">Open</button>`)}
       ${row("Commands", "What your phone may run on this PC", `<button class="btn" data-action="commands">Edit</button>`)}
       ${state.me ? `<div class="row"><div class="grow">Device ID<div class="sub">${esc(state.me[0])}</div></div></div>` : ""}
+    </div></div>
+    <div class="group"><h2>Share files</h2><div class="card">
+      ${row("Share a folder with my devices", "They can browse it and download from it, wherever they are. Hidden and system files are never shared.", sw("share_files", s.share_files))}
+      ${row("Folder", esc(s.share_folder ?? "Your user folder"), `<button class="btn" data-action="share-folder" ${s.share_files ? "" : "disabled"}>Choose</button>`)}
+      ${row("Allow changes", "They may also upload, rename and delete there", sw("share_changes", s.share_changes, s.share_files))}
     </div></div>
     <div class="group"><h2>Phone notifications</h2><div class="card">
       ${row("Show the phone's notifications", "With their buttons and replies", sw("show_notifications", s.show_notifications))}
@@ -562,6 +568,11 @@ document.addEventListener("click", async (e) => {
   }
   if (action === "commands") return show("commands");
   if (action === "downloads") return run("open_downloads");
+  if (action === "share-folder") {
+    const folder = await tauri.dialog.open({ directory: true, title: "Folder to share" });
+    if (folder) return run("set_share_folder", { folder }, "Sharing that folder with your devices");
+    return;
+  }
   if (t.dataset.call && d) return run("call_action", { id: d.id, action: t.dataset.call });
   if (t.dataset.media && d) {
     return run("media_control", { id: d.id, player: t.dataset.player, action: t.dataset.media, value: 0 });

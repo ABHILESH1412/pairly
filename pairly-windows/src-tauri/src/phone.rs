@@ -171,7 +171,7 @@ impl Backend {
         Ok(list)
     }
 
-    /// Copy a phone's file into the received-files folder; returns where it went.
+    /// Copy a device's file into the received-files folder; returns where it went.
     pub async fn files_download(&self, id: &str, path: &str, size: u64) -> Result<String> {
         let peer = parse(id)?;
         let files = self.features()?.files;
@@ -181,16 +181,15 @@ impl Backend {
         let part = part_path(&target);
         let result = async {
             let mut out = std::fs::File::create(&part)?;
-            let mut offset = 0u64;
-            loop {
-                let chunk = files.read(peer, path, offset, CHUNK).await?;
-                if chunk.is_empty() {
-                    break;
-                }
-                out.write_all(&chunk)?;
-                offset += chunk.len() as u64;
-                self.files_progress(id, path, offset, size.max(offset), false);
-            }
+            files
+                .download(
+                    peer,
+                    path,
+                    size,
+                    |data| out.write_all(data),
+                    |done| self.files_progress(id, path, done, size.max(done), false),
+                )
+                .await?;
             out.sync_all()?;
             drop(out);
             std::fs::rename(&part, &target)?;

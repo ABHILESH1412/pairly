@@ -279,6 +279,7 @@ pub fn open(
     }
     page.add(&this_pc);
 
+    page.add(&file_sharing_group(&dialog, daemon.clone()));
     page.add(&relay_group(&dialog, daemon.clone()));
     page.add(&updates_group(daemon.clone()));
 
@@ -345,6 +346,134 @@ fn update_text(current: &str, state: &str, detail: &str) -> String {
         "failed" => format!("Couldn't update: {detail}"),
         _ => format!("Pairly {current}"),
     }
+}
+
+/// Sharing a folder with paired devices: on or off, which folder, and whether they may change
+/// things there.
+fn file_sharing_group(
+    dialog: &adw::PreferencesDialog,
+    daemon: Option<DaemonProxy<'static>>,
+) -> adw::PreferencesGroup {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let group = adw::PreferencesGroup::builder()
+        .title("Share Files")
+        .description(
+            "Your paired devices can browse this folder and download from it, wherever they \
+             are. Hidden files (like .ssh) are never shared.",
+        )
+        .build();
+    let on = adw::SwitchRow::builder()
+        .title("Share a folder with my devices")
+        .sensitive(false)
+        .build();
+    let folder_row = adw::ActionRow::builder()
+        .title("Folder")
+        .subtitle_selectable(true)
+        .sensitive(false)
+        .build();
+    let choose = gtk::Button::builder()
+        .label("Choose…")
+        .valign(gtk::Align::Center)
+        .build();
+    folder_row.add_suffix(&choose);
+    let changes = adw::SwitchRow::builder()
+        .title("Allow changes")
+        .subtitle("They may also upload, rename and delete there")
+        .sensitive(false)
+        .build();
+    group.add(&on);
+    group.add(&folder_row);
+    group.add(&changes);
+    let Some(daemon) = daemon else { return group };
+
+    let folder = Rc::new(RefCell::new(String::new()));
+    // Set while showing the daemon's values, so that doesn't count as a change.
+    let loading = Rc::new(Cell::new(true));
+    let save = {
+        let (dialog, daemon, on, changes, folder, loading) = (
+            dialog.clone(),
+            daemon.clone(),
+            on.clone(),
+            changes.clone(),
+            folder.clone(),
+            loading.clone(),
+        );
+        Rc::new(move || {
+            if loading.get() {
+                return;
+            }
+            let (share, allow) = (on.is_active(), changes.is_active());
+            let path = folder.borrow().clone();
+            let (dialog, daemon) = (dialog.clone(), daemon.clone());
+            gtk::glib::spawn_future_local(async move {
+                let result =
+                    relm4::spawn(async move { daemon.set_file_sharing(share, &path, allow).await })
+                        .await;
+                let text = match result {
+                    Ok(Ok(())) if share => "Sharing that folder with your devices".to_owned(),
+                    Ok(Ok(())) => "Not sharing files".to_owned(),
+                    Ok(Err(e)) => format!("Couldn't change file sharing: {}", describe(&e)),
+                    Err(e) => format!("Couldn't change file sharing: {e}"),
+                };
+                dialog.add_toast(adw::Toast::new(&text));
+            });
+        })
+    };
+    on.connect_active_notify({
+        let (save, folder_row, changes) = (save.clone(), folder_row.clone(), changes.clone());
+        move |row| {
+            folder_row.set_sensitive(row.is_active());
+            changes.set_sensitive(row.is_active());
+            save();
+        }
+    });
+    changes.connect_active_notify({
+        let save = save.clone();
+        move |_| save()
+    });
+    choose.connect_clicked({
+        let (dialog, folder, folder_row, save) = (
+            dialog.clone(),
+            folder.clone(),
+            folder_row.clone(),
+            save.clone(),
+        );
+        move |_| {
+            let (folder, folder_row, save) = (folder.clone(), folder_row.clone(), save.clone());
+            let start = gtk::gio::File::for_path(folder.borrow().as_str());
+            let window = dialog.root().and_downcast::<gtk::Window>();
+            gtk::FileDialog::builder()
+                .title("Folder to Share")
+                .accept_label("Share")
+                .initial_folder(&start)
+                .build()
+                .select_folder(window.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
+                    if let Some(path) = res.ok().and_then(|f| f.path()) {
+                        let path = path.display().to_string();
+                        folder_row.set_subtitle(&path);
+                        *folder.borrow_mut() = path;
+                        save();
+                    }
+                });
+        }
+    });
+    gtk::glib::spawn_future_local(async move {
+        if let Ok(Ok((share, path, allow))) =
+            relm4::spawn(async move { daemon.file_sharing().await }).await
+        {
+            folder_row.set_subtitle(&path);
+            *folder.borrow_mut() = path;
+            on.set_active(share);
+            changes.set_active(allow);
+            on.set_sensitive(true);
+            folder_row.set_sensitive(share);
+            changes.set_sensitive(share);
+        }
+        loading.set(false);
+    });
+    group
 }
 
 /// The relay: how devices reach each other away from home.

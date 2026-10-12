@@ -10,6 +10,8 @@ import android.provider.Settings
 import android.util.Log
 import dev.pairly.core.ffi.BatteryData
 import dev.pairly.core.ffi.Device
+import dev.pairly.core.ffi.DownloadProgress
+import dev.pairly.core.ffi.FileEntryData
 import dev.pairly.core.ffi.DeviceKind
 import dev.pairly.core.ffi.Event
 import dev.pairly.core.ffi.EventListener
@@ -277,6 +279,41 @@ object Pairly {
     fun inputButton(device: String, button: MouseButtonData, action: ButtonActionData) {
         runCatching { node?.inputButton(device, button, action) }
     }
+
+    /** A folder on another device (`""`: the top of what it shares). */
+    suspend fun filesList(device: String, path: String): List<FileEntryData> {
+        val n = node ?: error(appContext.getString(R.string.files_off))
+        return n.filesList(device, path)
+    }
+
+    /**
+     * Download a file from another device into Downloads/Pairly, reporting (bytes so far,
+     * total) from a background thread. Returns where it went.
+     */
+    suspend fun filesDownload(
+        device: String,
+        path: String,
+        name: String,
+        size: Long,
+        onProgress: (Long, Long) -> Unit,
+    ): Uri = withContext(Dispatchers.IO) {
+        val n = node ?: error(appContext.getString(R.string.files_off))
+        val (uri, fd) = Downloads.create(appContext, name, null)
+        try {
+            val progress = object : DownloadProgress {
+                override fun progress(done: ULong, total: ULong) = onProgress(done.toLong(), total.toLong())
+            }
+            n.filesDownload(device, path, size.toULong(), fd, progress)
+            Downloads.publish(appContext, uri)
+            uri
+        } catch (e: Exception) {
+            Downloads.discard(appContext, uri)
+            throw e
+        }
+    }
+
+    /** A failure, worded for the user. */
+    fun errorText(e: Throwable): String = e.describe()
 
     /** Ask a PC to show its screen on this phone (or stop). */
     fun screenRequest(device: String, start: Boolean) {

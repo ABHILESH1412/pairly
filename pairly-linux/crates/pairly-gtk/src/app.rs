@@ -1173,25 +1173,39 @@ fn device_row(d: &Device, sender: &ComponentSender<App>) -> gtk::ListBoxRow {
 /// The plain list of file links (`text/uri-list`) is read first: GTK's own file-list format
 /// goes through the desktop's document portal, and when that service isn't running the drop
 /// fails silently. The file list is only the fallback for sources without links.
+///
+/// Nautilus offers some drags only as a *move*. Those are taken too (or GTK would refuse the
+/// drop), but answered "not moved", so the file manager never deletes the original.
 fn file_drop_target(on_drop: impl Fn(Vec<String>) + 'static) -> gtk::DropTargetAsync {
     use gtk::gdk;
     let formats = gdk::ContentFormatsBuilder::new()
         .add_mime_type(URI_LIST)
         .add_type(gdk::FileList::static_type())
         .build();
-    let target = gtk::DropTargetAsync::new(Some(formats), gdk::DragAction::COPY);
-    // Always a copy: the file manager must never delete the original.
-    target.connect_drag_enter(|_, _, _, _| gdk::DragAction::COPY);
-    target.connect_drag_motion(|_, _, _, _| gdk::DragAction::COPY);
+    let target =
+        gtk::DropTargetAsync::new(Some(formats), gdk::DragAction::COPY | gdk::DragAction::MOVE);
+    // A copy whenever the source allows one.
+    let action = |drop: &gdk::Drop| {
+        if drop.actions().contains(gdk::DragAction::COPY) {
+            gdk::DragAction::COPY
+        } else {
+            gdk::DragAction::MOVE
+        }
+    };
+    target.connect_drag_enter(move |_, drop, _, _| action(drop));
+    target.connect_drag_motion(move |_, drop, _, _| action(drop));
     let on_drop = std::rc::Rc::new(on_drop);
     target.connect_drop(move |_, drop, _, _| {
         let (drop, on_drop) = (drop.clone(), on_drop.clone());
         gtk::glib::spawn_future_local(async move {
             let paths = dropped_paths(&drop).await;
-            if paths.is_empty() {
-                drop.finish(gdk::DragAction::empty());
-            } else {
+            // Never confirm a move: the source would delete what was sent.
+            if drop.actions().contains(gdk::DragAction::COPY) && !paths.is_empty() {
                 drop.finish(gdk::DragAction::COPY);
+            } else {
+                drop.finish(gdk::DragAction::empty());
+            }
+            if !paths.is_empty() {
                 on_drop(paths);
             }
         });
@@ -1397,6 +1411,15 @@ fn device_page(
             ));
         }
         if matches!(d.device_type.as_str(), "desktop" | "laptop") {
+            tiles.push(tile(
+                "folder-symbolic",
+                "Browse Files",
+                "The folder it shares",
+                "amber",
+                on,
+                sender,
+                with(Input::OpenFiles),
+            ));
             tiles.push(tile(
                 "video-display-symbolic",
                 "PC Screen",
