@@ -6,7 +6,8 @@
 //! ```sh
 //! cargo run --example fake_phone -- <data folder>
 //! ```
-//! Then type `help`.
+//! Then type `help`. With `FAKE_PHONE_AS_PC=1` it says it's a desktop PC instead (for trying
+//! another PC's screen: the mouse and keyboard it receives are printed).
 
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -599,7 +600,12 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(47120);
-    let node = PairlyNode::builder(NodeConfig::new("Pairly Test Phone", DeviceType::Phone))
+    let (name, kind) = if std::env::var_os("FAKE_PHONE_AS_PC").is_some() {
+        ("Pairly Test PC", DeviceType::Desktop)
+    } else {
+        ("Pairly Test Phone", DeviceType::Phone)
+    };
+    let node = PairlyNode::builder(NodeConfig::new(name, kind))
         .keystore(Arc::new(FileKeyStore::new(dir.join("identity.key"))))
         .registry(Registry::open(&dir.join("registry.db"))?)
         .platform(phone.clone())

@@ -311,6 +311,20 @@ impl Backend {
             .unwrap_or_else(|| "Your device".into())
     }
 
+    /// A desktop or laptop (rather than a phone or tablet).
+    pub fn is_pc(&self, id: DeviceId) -> bool {
+        self.node()
+            .ok()
+            .and_then(|n| n.devices().ok())
+            .and_then(|list| list.into_iter().find(|d| d.id == id))
+            .is_some_and(|d| {
+                matches!(
+                    d.device_type,
+                    Some(DeviceType::Desktop | DeviceType::Laptop)
+                )
+            })
+    }
+
     // ----- starting and stopping -----------------------------------------------------------
 
     /// Start the node (if Pairly is on and it isn't running).

@@ -1,5 +1,6 @@
 //! Screen mirroring: one device shows its screen to another as an H.264 stream, and the viewer
-//! controls it (taps, swipes, keys, text).
+//! controls it: taps, swipes, keys and text for a phone's screen; the pointer, mouse buttons,
+//! wheel and key combinations for a PC's (a PC watching another PC).
 //!
 //! Only over the local network: video needs its bandwidth, and Bluetooth or a relay would
 //! make it unusable (or expensive). Both sides check the link, and a stream stops if its
@@ -21,6 +22,7 @@ use pairly_core::{
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use crate::input::{ButtonAction, Modifiers, MouseButton, SpecialKey};
 use crate::peers::Peers;
 
 /// The biggest single frame (a key frame of a detailed screen is a few hundred KB).
@@ -131,6 +133,32 @@ pub enum ScreenInput {
         dx: f32,
         dy: f32,
     },
+    /// A PC's screen: the pointer moved here (sent unreliably: the next move overtakes a lost
+    /// one).
+    Pointer {
+        x: f32,
+        y: f32,
+    },
+    /// A PC's screen: a mouse button pressed, released or clicked here.
+    Button {
+        x: f32,
+        y: f32,
+        button: MouseButton,
+        action: ButtonAction,
+    },
+    /// A PC's screen: mouse wheel steps (positive: down, right).
+    Wheel {
+        dx: f32,
+        dy: f32,
+    },
+    /// A PC's screen: a key or text with modifiers held (shortcuts, function keys). With
+    /// neither, the modifiers alone are tapped (the Windows key opens the Start menu).
+    Combo {
+        key: Option<SpecialKey>,
+        text: Option<String>,
+        #[serde(default)]
+        modifiers: Modifiers,
+    },
 }
 
 impl PacketBody for ScreenInput {
@@ -177,11 +205,48 @@ impl ScreenInput {
             }
             Self::Text { text } if text.len() <= MAX_TEXT => Self::Text { text },
             Self::Text { .. } => return None,
+            Self::Pointer { x, y } => Self::Pointer {
+                x: unit(x)?,
+                y: unit(y)?,
+            },
+            Self::Button {
+                x,
+                y,
+                button,
+                action,
+            } => Self::Button {
+                x: unit(x)?,
+                y: unit(y)?,
+                button,
+                action,
+            },
+            Self::Wheel { dx, dy } => {
+                let steps = |v: f32| v.is_finite().then(|| v.clamp(-20.0, 20.0));
+                Self::Wheel {
+                    dx: steps(dx)?,
+                    dy: steps(dy)?,
+                }
+            }
+            Self::Combo { text: Some(t), .. } if t.len() > MAX_TEXT => return None,
+            Self::Combo {
+                key,
+                text,
+                modifiers,
+            } => Self::Combo {
+                key: key.filter(|k| !matches!(k, SpecialKey::F(n) if !(1..=24).contains(n))),
+                text: text.filter(|t| !t.is_empty()),
+                modifiers,
+            },
         })
+    }
+
+    /// Only worth sending while fresh (pointer moves).
+    fn is_motion(&self) -> bool {
+        matches!(self, Self::Pointer { .. })
     }
 }
 
-/// Each side implements its half: the sharer (phone) the first three, the viewer (PC) the rest.
+/// Each side implements its half: the sharer the first three, the viewer the rest.
 pub trait ScreenHost: Send + Sync + 'static {
     /// A viewer asks to see this screen: ask the user, then call [`ScreenPlugin::started`].
     fn start_sharing(&self, _from: &PeerInfo) -> std::result::Result<(), String> {
@@ -248,10 +313,12 @@ impl ScreenPlugin {
         let input = input
             .sanitized()
             .ok_or(CoreError::Violation("bad screen input"))?;
-        self.peers.send(
-            peer,
-            OutboundPacket::reliable(&input, Priority::Interactive)?,
-        )
+        let packet = if input.is_motion() {
+            OutboundPacket::unreliable(&input, Priority::Interactive)?
+        } else {
+            OutboundPacket::reliable(&input, Priority::Interactive)?
+        };
+        self.peers.send(peer, packet)
     }
 
     /// Sharer: the stream starts.
