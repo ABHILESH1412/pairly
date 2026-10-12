@@ -245,6 +245,7 @@ function devicePage(d) {
   } else {
     const on = d.connected;
     const phone = isPhone(d);
+    const pc = d.kind === "desktop" || d.kind === "laptop";
     const ringing = state.ringing.includes(d.id);
     const lan = d.link === "Lan";
     body = `${callCard(d)}${castCard(d)}<div class="tiles">
@@ -252,6 +253,7 @@ function devicePage(d) {
       ${phone ? tile("💬", "Messages", "Read and send texts", "teal", on, "messages") : ""}
       ${phone ? tile("📇", "Contacts & Calls", "Call or text from here", "coral", on, "contacts") : ""}
       ${phone ? tile("🗂️", "Browse Files", "The phone's storage", "amber", on, "files") : ""}
+      ${pc ? tile("🖥️", "PC Screen", lan || !on ? "See and control it" : "Needs the same Wi-Fi", "purple", on && lan, "screen") : ""}
       ${tile("📤", "Send Files", "Or drop them on this window", "blue", on, "send-files")}
       ${tile("🔗", "Link or Text", "Opens or copies there", "blue", on, "text")}
       ${tile("📋", "Clipboard", "Send what you copied", "pink", on, "clipboard")}
@@ -349,7 +351,7 @@ function settingsPage() {
     <div class="group"><h2>Calls and control</h2><div class="card">
       ${row("Pause music during calls", "This PC's players pause while the phone rings or is in a call", sw("pause_media_for_calls", s.pause_media_for_calls))}
       ${row("Phones may lock, restart or power off this PC", "", sw("power_from_phone", s.power_from_phone))}
-      ${row("Phones may view and control this screen", "On the same Wi-Fi; a notification shows while it does", sw("share_screen", s.share_screen))}
+      ${row("Phones and PCs may view and control this screen", "On the same Wi-Fi; a notification shows while it does", sw("share_screen", s.share_screen))}
     </div></div>
     <div class="group"><h2>Connections</h2><div class="card">
       <div class="row"><div class="grow"><b>Relay</b>

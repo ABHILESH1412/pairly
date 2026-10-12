@@ -10,6 +10,7 @@
     .viewer { display: flex; flex-direction: column; height: 100vh; }
     .stage { flex: 1; min-height: 0; display: grid; place-items: center; position: relative; }
     canvas { max-width: 100%; max-height: 100%; touch-action: none; cursor: pointer; background: #000; }
+    canvas.pc { cursor: default; outline: none; }
     canvas.idle { visibility: hidden; }
     .status { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: #ccc; }
     .status[hidden] { display: none; }
@@ -22,7 +23,7 @@
 <body>
   <div class="viewer">
     <div class="stage">
-      <canvas id="video" class="idle" width="360" height="780"></canvas>
+      <canvas id="video" class="idle" tabindex="0" width="360" height="780"></canvas>
       <div class="status" id="status"><div><div class="big">📲</div><div id="status-text">Asking the phone to share its screen…</div></div></div>
     </div>
     <div class="keys">

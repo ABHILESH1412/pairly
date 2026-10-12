@@ -442,7 +442,7 @@ impl TelephonyHost for Host {
 }
 
 impl ScreenHost for Host {
-    // This PC's screen, for a phone.
+    // This PC's screen, for a phone or another PC.
     fn start_sharing(&self, from: &PeerInfo) -> std::result::Result<(), String> {
         let b = self.0.upgrade().ok_or("Pairly is stopping")?;
         if !b.settings().share_screen {
@@ -459,7 +459,7 @@ impl ScreenHost for Host {
         self.with(|b| b.screens.cast_input(from, input));
     }
 
-    // A phone's screen, on this PC.
+    // A phone's (or another PC's) screen, on this PC.
     fn started(&self, from: &PeerInfo, width: u32, height: u32) {
         self.with(|b| b.screens.viewer_started(from.id, width, height));
     }

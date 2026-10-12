@@ -16,6 +16,7 @@ Bluetooth or your own relay.
 | Clipboard both ways, automatically | The PC's media controls on the lock screen |
 | Find your phone (rings it, even on silent), see its battery | |
 | Send files and links to the phone; lock or power off the phone | |
+| See and control the phone's screen, or another PC's (Linux or Windows) | See and control the PC's screen |
 
 It works:
 - **on the same network**, over Wi-Fi with automatic discovery;

@@ -30,6 +30,8 @@ struct Running {
     events: mpsc::Sender<TransportEvent>,
     known: KnownAddresses,
     listener: imp::Listener,
+    /// The node's runtime: peers may change from any thread (unpairing runs on the UI's).
+    runtime: tokio::runtime::Handle,
 }
 
 pub struct BluetoothTransport {
@@ -85,6 +87,7 @@ impl Transport for BluetoothTransport {
             events,
             known: KnownAddresses::new(TransportKind::Bluetooth),
             listener,
+            runtime: tokio::runtime::Handle::current(),
         });
         Ok(())
     }
@@ -103,7 +106,7 @@ impl Transport for BluetoothTransport {
             return;
         }
         let tx = running.events.clone();
-        tokio::spawn(async move {
+        running.runtime.spawn(async move {
             for e in events {
                 let _ = tx.send(e).await;
             }

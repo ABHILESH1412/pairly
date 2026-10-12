@@ -343,7 +343,8 @@ fn set_app_muted(backend: Backends<'_>, app: String, muted: bool) {
 async fn screen_open(backend: Backends<'_>, id: String) -> Answer {
     let peer = backend::parse(&id).map_err(text)?;
     let name = backend.device_name(peer);
-    backend.screens.open_viewer(peer, &name).map_err(text)
+    let pc = backend.is_pc(peer);
+    backend.screens.open_viewer(peer, &name, pc).map_err(text)
 }
 
 #[tauri::command]

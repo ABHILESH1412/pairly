@@ -1396,6 +1396,17 @@ fn device_page(
                 with(Input::OpenFiles),
             ));
         }
+        if matches!(d.device_type.as_str(), "desktop" | "laptop") {
+            tiles.push(tile(
+                "video-display-symbolic",
+                "PC Screen",
+                "See and control it",
+                "purple",
+                on,
+                sender,
+                with(Input::ShowScreen),
+            ));
+        }
         tiles.push(tile(
             "document-send-symbolic",
             "Send Files",

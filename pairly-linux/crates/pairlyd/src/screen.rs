@@ -6,10 +6,11 @@
 //! piling up. Closing the window stops the phone's sharing; the phone stopping (or leaving)
 //! tells the window why.
 //!
-//! **This PC's screen on a phone:** a phone asking starts `pairly-gtk --cast` (the desktop's
-//! screen-sharing portal decides which screen, asking the first time), its H.264 frames go to
-//! the phone, and the phone's touches become clicks, drags, scrolling and typing here. A
-//! notification shows while it lasts. `[screen] share_with_phones = false` turns it off.
+//! **This PC's screen on a phone or another PC:** one asking starts `pairly-gtk --cast` (the
+//! desktop's screen-sharing portal decides which screen, asking the first time), its H.264
+//! frames go to the viewer, and a phone's touches (or a PC's mouse and keyboard) become
+//! clicks, drags, scrolling and typing here. A notification shows while it lasts.
+//! `[screen] share_with_phones = false` turns it off.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -28,6 +29,8 @@ use tracing::{debug, info, warn};
 
 /// About half a second of video.
 const QUEUE_FRAMES: usize = 16;
+/// Scroll per mouse wheel step from a viewing PC (in the input backends' pixels).
+const WHEEL_STEP: f32 = 20.0;
 
 const STARTED: u8 = 1;
 const FRAME: u8 = 2;
@@ -46,6 +49,8 @@ struct Cast {
     monitor: (i32, i32),
     height: u32,
     notification: Option<u32>,
+    /// A viewing PC's mouse buttons held down here (let go when the sharing ends).
+    held: Vec<MouseButton>,
 }
 
 #[derive(Default)]
@@ -138,6 +143,7 @@ impl LinuxScreen {
                 monitor: (0, 0),
                 height: 1080,
                 notification: None,
+                held: Vec::new(),
             },
         );
         info!(device = %from.id, "sharing this PC's screen");
@@ -213,6 +219,14 @@ impl LinuxScreen {
             return;
         };
         info!(device = %peer.id, reason, "stopped sharing this PC's screen");
+        if let Some(sharing) = self.sharing.get() {
+            for button in cast.held {
+                sharing.input.press(PointerButton {
+                    button,
+                    action: ButtonAction::Release,
+                });
+            }
+        }
         if let (Some(reason), Some(plugin)) = (reason, self.plugin()) {
             let _ = plugin.stopped(peer.id, reason);
         }
@@ -252,7 +266,8 @@ impl LinuxScreen {
         self.this.get().cloned()
     }
 
-    /// The phone's touches and keys, as this PC's pointer and keyboard.
+    /// The viewer's touches and keys (a phone) or mouse and keyboard (a PC), as this PC's
+    /// pointer and keyboard.
     fn control(&self, from: &PeerInfo, input: ScreenInput) {
         let Some(sharing) = self.sharing.get() else {
             return;
@@ -336,6 +351,36 @@ impl LinuxScreen {
                     modifiers: Modifiers::default(),
                 },
             ),
+            // Another PC's mouse and keyboard.
+            ScreenInput::Pointer { x, y } => pc.place(monitor, x, y),
+            ScreenInput::Button {
+                x,
+                y,
+                button,
+                action,
+            } => {
+                if let Some(cast) = self.casts().get_mut(&from.id) {
+                    cast.held.retain(|b| *b != button);
+                    if action == ButtonAction::Press {
+                        cast.held.push(button);
+                    }
+                }
+                pc.place(monitor, x, y);
+                pc.press(PointerButton { button, action });
+            }
+            ScreenInput::Wheel { dx, dy } => pc.scroll(dx * WHEEL_STEP, dy * WHEEL_STEP),
+            ScreenInput::Combo {
+                key,
+                text,
+                modifiers,
+            } => pc.key(
+                from,
+                &KeyInput {
+                    text,
+                    key,
+                    modifiers,
+                },
+            ),
         }
     }
 
@@ -347,8 +392,9 @@ impl LinuxScreen {
         self.viewers.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Open the viewer for `peer` (named `name`) and ask the phone to share.
-    pub fn open(self: &Arc<Self>, peer: DeviceId, name: &str) -> Result<(), String> {
+    /// Open the viewer for `peer` (named `name`; `pc`: another PC, controlled with the mouse
+    /// and keyboard rather than touches) and ask it to share.
+    pub fn open(self: &Arc<Self>, peer: DeviceId, name: &str, pc: bool) -> Result<(), String> {
         let plugin = self.plugin().ok_or("screen sharing isn't running")?;
         // Ask first: it fails right away if the phone isn't on the same Wi-Fi.
         plugin
@@ -359,6 +405,7 @@ impl LinuxScreen {
         }
         let mut child = crate::desktop_env::command(crate::laser::gtk_binary())
             .args(["--screen", name])
+            .args(pc.then_some("--pc"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -374,7 +421,7 @@ impl LinuxScreen {
             *n
         };
         self.lock().insert(peer, Viewer { tx, id });
-        info!(device = %peer, "showing the phone's screen");
+        info!(device = %peer, "showing the device's screen");
 
         std::thread::Builder::new()
             .name("pairly-screen-out".into())
@@ -399,7 +446,7 @@ impl LinuxScreen {
                         if let Some(plugin) = this.plugin() {
                             let _ = plugin.request(peer, ScreenAction::Stop);
                         }
-                        info!(device = %peer, "phone screen closed");
+                        info!(device = %peer, "screen viewer closed");
                     }
                 }
             })
@@ -450,7 +497,8 @@ fn write_loop(mut stdin: ChildStdin, rx: &std::sync::mpsc::Receiver<Vec<u8>>) {
 }
 
 /// `tap x y`, `long x y`, `swipe ms x y x y…`, `key back|home|recents|enter|backspace`,
-/// `text …`.
+/// `text …` (a phone's screen); `move x y`, `button left|right|middle press|release|click x y`,
+/// `wheel dx dy`, `combo ctrl+alt+shift+super|- [key <name>|text <text>]` (a PC's).
 fn parse_input(line: &str) -> Option<ScreenInput> {
     let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
     let nums = || -> Vec<f32> {
@@ -499,7 +547,104 @@ fn parse_input(line: &str) -> Option<ScreenInput> {
         "text" if !rest.is_empty() => ScreenInput::Text {
             text: rest.to_owned(),
         },
+        "move" => {
+            let n = nums();
+            ScreenInput::Pointer {
+                x: *n.first()?,
+                y: *n.get(1)?,
+            }
+        }
+        "button" => {
+            let mut words = rest.splitn(3, ' ');
+            let button = match words.next()? {
+                "left" => MouseButton::Left,
+                "right" => MouseButton::Right,
+                "middle" => MouseButton::Middle,
+                _ => return None,
+            };
+            let action = match words.next()? {
+                "press" => ButtonAction::Press,
+                "release" => ButtonAction::Release,
+                "click" => ButtonAction::Click,
+                _ => return None,
+            };
+            let n: Vec<f32> = words
+                .next()?
+                .split_whitespace()
+                .filter_map(|w| w.parse().ok())
+                .collect();
+            ScreenInput::Button {
+                x: *n.first()?,
+                y: *n.get(1)?,
+                button,
+                action,
+            }
+        }
+        "wheel" => {
+            let n = nums();
+            ScreenInput::Wheel {
+                dx: *n.first()?,
+                dy: *n.get(1)?,
+            }
+        }
+        "combo" => parse_combo(rest)?,
         _ => return None,
+    })
+}
+
+/// `ctrl+shift key f5`, `ctrl text c`, `super` (the Windows key alone), `- key enter`.
+fn parse_combo(rest: &str) -> Option<ScreenInput> {
+    let (mods, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+    let mut modifiers = Modifiers::default();
+    for m in mods.split('+') {
+        match m {
+            "ctrl" => modifiers.ctrl = true,
+            "alt" => modifiers.alt = true,
+            "shift" => modifiers.shift = true,
+            "super" => modifiers.logo = true,
+            "-" => {}
+            _ => return None,
+        }
+    }
+    let (mut key, mut text) = (None, None);
+    match rest.split_once(' ').unwrap_or((rest, "")) {
+        ("key", name) => key = Some(special_key(name)?),
+        ("text", t) if !t.is_empty() => text = Some(t.to_owned()),
+        ("", "") => {}
+        _ => return None,
+    }
+    Some(ScreenInput::Combo {
+        key,
+        text,
+        modifiers,
+    })
+}
+
+fn special_key(name: &str) -> Option<SpecialKey> {
+    Some(match name {
+        "enter" => SpecialKey::Enter,
+        "backspace" => SpecialKey::Backspace,
+        "delete" => SpecialKey::Delete,
+        "tab" => SpecialKey::Tab,
+        "escape" => SpecialKey::Escape,
+        "left" => SpecialKey::Left,
+        "right" => SpecialKey::Right,
+        "up" => SpecialKey::Up,
+        "down" => SpecialKey::Down,
+        "home" => SpecialKey::Home,
+        "end" => SpecialKey::End,
+        "page_up" => SpecialKey::PageUp,
+        "page_down" => SpecialKey::PageDown,
+        "space" => SpecialKey::Space,
+        "volume_up" => SpecialKey::VolumeUp,
+        "volume_down" => SpecialKey::VolumeDown,
+        "mute" => SpecialKey::Mute,
+        f => SpecialKey::F(
+            f.strip_prefix('f')?
+                .parse()
+                .ok()
+                .filter(|n| (1..=24).contains(n))?,
+        ),
     })
 }
 
@@ -601,6 +746,61 @@ mod tests {
             parse_input("text  "),
             Some(ScreenInput::Text { text: " ".into() })
         );
+        assert_eq!(
+            parse_input("move 0.1 0.9"),
+            Some(ScreenInput::Pointer { x: 0.1, y: 0.9 })
+        );
+        assert_eq!(
+            parse_input("button right press 0.5 0.25"),
+            Some(ScreenInput::Button {
+                x: 0.5,
+                y: 0.25,
+                button: MouseButton::Right,
+                action: ButtonAction::Press
+            })
+        );
+        assert_eq!(
+            parse_input("wheel 0 -3"),
+            Some(ScreenInput::Wheel { dx: 0.0, dy: -3.0 })
+        );
+        assert_eq!(
+            parse_input("combo ctrl+shift key f5"),
+            Some(ScreenInput::Combo {
+                key: Some(SpecialKey::F(5)),
+                text: None,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Modifiers::default()
+                }
+            })
+        );
+        // A typed space with Ctrl held.
+        assert_eq!(
+            parse_input("combo ctrl text  "),
+            Some(ScreenInput::Combo {
+                key: None,
+                text: Some(" ".into()),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                }
+            })
+        );
+        assert_eq!(
+            parse_input("combo super"),
+            Some(ScreenInput::Combo {
+                key: None,
+                text: None,
+                modifiers: Modifiers {
+                    logo: true,
+                    ..Modifiers::default()
+                }
+            })
+        );
+        assert_eq!(parse_input("combo hyper key f5"), None);
+        assert_eq!(parse_input("combo - key f99"), None);
+        assert_eq!(parse_input("button left wiggle 0.5 0.5"), None);
         assert_eq!(parse_input("tap 0.5"), None);
         assert_eq!(parse_input("stop"), None);
     }

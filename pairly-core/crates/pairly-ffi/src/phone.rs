@@ -549,10 +549,14 @@ pub enum ScreenInputData {
     },
 }
 
-impl From<pairly_plugins::screen::ScreenInput> for ScreenInputData {
-    fn from(input: pairly_plugins::screen::ScreenInput) -> Self {
+/// A phone's screen takes touch-style input; a PC's mouse and key combinations (meant for
+/// another PC's screen) have no counterpart there.
+impl TryFrom<pairly_plugins::screen::ScreenInput> for ScreenInputData {
+    type Error = ();
+
+    fn try_from(input: pairly_plugins::screen::ScreenInput) -> Result<Self, ()> {
         use pairly_plugins::screen::{ScreenInput, ScreenKey};
-        match input {
+        Ok(match input {
             ScreenInput::Tap { x, y } => Self::Tap { x, y },
             ScreenInput::LongPress { x, y } => Self::LongPress { x, y },
             ScreenInput::Swipe {
@@ -581,7 +585,11 @@ impl From<pairly_plugins::screen::ScreenInput> for ScreenInputData {
             },
             ScreenInput::Text { text } => Self::Text { text },
             ScreenInput::Scroll { dx, dy } => Self::Scroll { dx, dy },
-        }
+            ScreenInput::Pointer { .. }
+            | ScreenInput::Button { .. }
+            | ScreenInput::Wheel { .. }
+            | ScreenInput::Combo { .. } => return Err(()),
+        })
     }
 }
 
@@ -619,7 +627,9 @@ impl pairly_plugins::screen::ScreenHost for ForeignScreen {
     }
 
     fn input(&self, from: &pairly_core::PeerInfo, input: pairly_plugins::screen::ScreenInput) {
-        self.0.input(from.id.to_string(), input.into());
+        if let Ok(input) = input.try_into() {
+            self.0.input(from.id.to_string(), input);
+        }
     }
 
     fn disconnected(&self, peer: pairly_core::DeviceId) {

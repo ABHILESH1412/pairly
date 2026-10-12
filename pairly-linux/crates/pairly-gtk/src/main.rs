@@ -5,8 +5,8 @@
 //! `pairly-gtk --reply <device> <notification> <title>` opens a reply window (used by pairlyd
 //! when the notification server has no inline replies), and
 //! `pairly-gtk --send [--to <device>] [files…]` sends files (file managers, the tray), and
-//! `pairly-gtk --laser` is the laser pointer overlay, and `pairly-gtk --screen <name>` a
-//! phone's screen (both started by pairlyd).
+//! `pairly-gtk --laser` is the laser pointer overlay, and `pairly-gtk --screen <name> [--pc]` a
+//! phone's or another PC's screen (both started by pairlyd).
 #![forbid(unsafe_code)]
 
 mod app;
@@ -48,7 +48,7 @@ fn main() {
     if let [flag, title, ..] = args.as_slice()
         && flag == "--screen"
     {
-        screen::run(title);
+        screen::run(title, args.iter().any(|a| a == "--pc"));
         return;
     }
     if let [flag, device, notification, title, ..] = args.as_slice()

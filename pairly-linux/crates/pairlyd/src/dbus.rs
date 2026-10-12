@@ -501,18 +501,25 @@ impl DaemonIface {
             .map_err(failed)
     }
 
-    /// Open a window showing the phone's screen (it asks its user first).
+    /// Open a window showing a phone's (or another PC's) screen; it asks its user first.
     async fn show_phone_screen(&self, id: &str) -> fdo::Result<()> {
+        use pairly_core::DeviceType;
         let peer = parse_id(id)?;
-        let name = self
+        let device = self
             .node
             .devices()
             .ok()
-            .and_then(|list| list.into_iter().find(|d| d.id == peer))
-            .map_or_else(|| "Phone".to_owned(), |d| d.name);
+            .and_then(|list| list.into_iter().find(|d| d.id == peer));
+        let pc = device.as_ref().is_some_and(|d| {
+            matches!(
+                d.device_type,
+                Some(DeviceType::Desktop | DeviceType::Laptop)
+            )
+        });
+        let name = device.map_or_else(|| "Phone".to_owned(), |d| d.name);
         self.features
             .screen_host
-            .open(peer, &name)
+            .open(peer, &name, pc)
             .map_err(fdo::Error::Failed)
     }
 

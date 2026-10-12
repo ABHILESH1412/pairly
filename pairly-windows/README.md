@@ -20,8 +20,10 @@ The same as the Linux app:
   from its notification or the window; this PC's music pauses while the phone rings
 - Browse the phone's files: download, upload (or drop files on the window), rename, delete
 - The phone's screen in a window, to watch and control it (same Wi-Fi)
-- This PC's screen on the phone, to watch and control it (same Wi-Fi; a notification shows while
-  it lasts, with a button to stop it)
+- Another PC's screen (Linux or Windows) in a window, controlled with your mouse and keyboard,
+  shortcuts included (same Wi-Fi)
+- This PC's screen on the phone or another PC, to watch and control it (same Wi-Fi; a
+  notification shows while it lasts, with a button to stop it)
 - Media both ways: the phone's music in the window, and this PC's players (Spotify, browsers,
   Media Player… anything using Windows' media controls) on the phone
 - Clipboard both ways (automatic, or on request); links and text
