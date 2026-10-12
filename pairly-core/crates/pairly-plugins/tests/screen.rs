@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use pairly_core::memory::MemoryNetwork;
 use pairly_core::{DeviceType, NodeConfig, NodeEvent, PairlyNode, PeerInfo};
+use pairly_plugins::input::{ButtonAction, Modifiers, MouseButton, SpecialKey};
 use pairly_plugins::screen::{
     ScreenAction, ScreenFrame, ScreenHost, ScreenInput, ScreenKey, ScreenPlugin,
 };
@@ -190,6 +191,108 @@ async fn share_watch_control_and_stop() {
     assert_eq!(
         pc.next().await,
         Call::Stopped("stopped on the phone".into())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pc_controls_another_pcs_screen() {
+    let net = MemoryNetwork::new();
+    let mut shared = start(&net, "shared", false).await;
+    let viewer = start(&net, "viewer", false).await;
+    pair(&shared, &viewer).await;
+    let id = shared.node.device_id();
+
+    // The mouse: moves (clamped), buttons where they happen, the wheel.
+    let sent = [
+        ScreenInput::Pointer { x: 0.25, y: 0.75 },
+        ScreenInput::Button {
+            x: 0.3,
+            y: 0.4,
+            button: MouseButton::Right,
+            action: ButtonAction::Press,
+        },
+        ScreenInput::Button {
+            x: 0.3,
+            y: 0.4,
+            button: MouseButton::Right,
+            action: ButtonAction::Release,
+        },
+        ScreenInput::Wheel { dx: 0.0, dy: 3.0 },
+    ];
+    for input in &sent {
+        viewer.screen.input(id, input.clone()).unwrap();
+        assert_eq!(shared.next().await, Call::Input(input.clone()));
+    }
+    viewer
+        .screen
+        .input(id, ScreenInput::Pointer { x: -1.0, y: 2.0 })
+        .unwrap();
+    assert_eq!(
+        shared.next().await,
+        Call::Input(ScreenInput::Pointer { x: 0.0, y: 1.0 })
+    );
+    viewer
+        .screen
+        .input(id, ScreenInput::Wheel { dx: 0.0, dy: 500.0 })
+        .unwrap();
+    assert_eq!(
+        shared.next().await,
+        Call::Input(ScreenInput::Wheel { dx: 0.0, dy: 20.0 })
+    );
+    assert!(
+        viewer
+            .screen
+            .input(
+                id,
+                ScreenInput::Pointer {
+                    x: f32::NAN,
+                    y: 0.5
+                }
+            )
+            .is_err()
+    );
+
+    // The keyboard: shortcuts, special keys, the Windows key alone.
+    let ctrl = Modifiers {
+        ctrl: true,
+        ..Modifiers::default()
+    };
+    let combos = [
+        ScreenInput::Combo {
+            key: None,
+            text: Some("c".into()),
+            modifiers: ctrl,
+        },
+        ScreenInput::Combo {
+            key: Some(SpecialKey::F(5)),
+            text: None,
+            modifiers: Modifiers::default(),
+        },
+        ScreenInput::Combo {
+            key: None,
+            text: None,
+            modifiers: Modifiers {
+                logo: true,
+                ..Modifiers::default()
+            },
+        },
+    ];
+    for input in &combos {
+        viewer.screen.input(id, input.clone()).unwrap();
+        assert_eq!(shared.next().await, Call::Input(input.clone()));
+    }
+    assert!(
+        viewer
+            .screen
+            .input(
+                id,
+                ScreenInput::Combo {
+                    key: None,
+                    text: Some("x".repeat(5000)),
+                    modifiers: ctrl,
+                }
+            )
+            .is_err()
     );
 }
 

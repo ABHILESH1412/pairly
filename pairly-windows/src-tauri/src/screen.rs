@@ -7,10 +7,13 @@
 //! What you do in the window goes back to the phone as taps, swipes, keys and text. Closing the
 //! window stops the phone's sharing.
 //!
-//! **This PC's screen on a phone:** a phone asking starts a recording of the main screen
-//! ([`crate::platform::capture`]), encoded to H.264 and sent to the phone; the phone's touches
-//! become clicks, drags, scrolling and typing here. A notification shows while it lasts, with a
-//! button to stop it.
+//! **Another PC's screen** works the same way, but what you do goes over as the mouse (moves,
+//! buttons, wheel) and keyboard (keys with their modifiers, so shortcuts work).
+//!
+//! **This PC's screen on a phone or another PC:** one asking starts a recording of the main
+//! screen ([`crate::platform::capture`]), encoded to H.264 and sent to it; a phone's touches (or
+//! a PC's mouse and keyboard) become clicks, drags, scrolling and typing here. A notification
+//! shows while it lasts, with a button to stop it.
 //!
 //! **The laser pointer:** a phone holding its "Pointer" button moves a red dot over everything
 //! on screen, drawn by a click-through, always-on-top window (`laser.html`) that closes after
@@ -45,6 +48,8 @@ struct Cast {
     recording: Recording,
     /// Where the shared monitor is on the desktop: (x, y, width, height) in pixels.
     monitor: (i32, i32, u32, u32),
+    /// A viewing PC's mouse buttons held down here (let go when the sharing ends).
+    held: Vec<MouseButton>,
 }
 
 #[derive(Default)]
@@ -127,8 +132,8 @@ impl Screens {
 
     // ----- a phone's screen here -----------------------------------------------------------
 
-    /// Open (or bring up) the window showing a phone's screen.
-    pub fn open_viewer(&self, peer: DeviceId, name: &str) -> anyhow::Result<()> {
+    /// Open (or bring up) the window showing a phone's screen (or another PC's, `pc`).
+    pub fn open_viewer(&self, peer: DeviceId, name: &str, pc: bool) -> anyhow::Result<()> {
         let b = self
             .backend
             .upgrade()
@@ -138,11 +143,17 @@ impl Screens {
             let _ = w.set_focus();
             return Ok(());
         }
-        let query = format!("screen.html?id={peer}&name={}", url_escape(name));
+        let mut query = format!("screen.html?id={peer}&name={}", url_escape(name));
+        let size = if pc {
+            query.push_str("&pc=1");
+            (1280.0, 800.0)
+        } else {
+            (420.0, 860.0)
+        };
         WebviewWindowBuilder::new(&b.app, label(peer), WebviewUrl::App(query.into()))
             .title(format!("{name} · Pairly"))
-            .inner_size(420.0, 860.0)
-            .min_inner_size(240.0, 320.0)
+            .inner_size(size.0, size.1)
+            .min_inner_size(240.0, 240.0)
             .build()?;
         Ok(())
     }
@@ -220,47 +231,52 @@ impl Screens {
         let weak = self.backend.clone();
         let peer = from.clone();
         let on_stop = Arc::new(AtomicBool::new(false));
-        let recording = capture::start(
-            Box::new({
-                let weak = weak.clone();
-                let peer = peer.clone();
-                move |event| {
-                    let Some(b) = weak.upgrade() else {
-                        return false;
-                    };
-                    let Some(plugin) = b.screens.plugin() else {
-                        return false;
-                    };
-                    match event {
-                        capture::Event::Started { width, height } => {
-                            if let Err(e) = plugin.started(peer.id, width, height) {
-                                tracing::warn!(error = %e, "can't start sharing the screen");
-                                return false;
-                            }
-                            true
+        let recording = capture::start(Box::new({
+            let weak = weak.clone();
+            let peer = peer.clone();
+            move |event| {
+                let Some(b) = weak.upgrade() else {
+                    return false;
+                };
+                let Some(plugin) = b.screens.plugin() else {
+                    return false;
+                };
+                match event {
+                    capture::Event::Started { width, height } => {
+                        if let Err(e) = plugin.started(peer.id, width, height) {
+                            tracing::warn!(error = %e, "can't start sharing the screen");
+                            return false;
                         }
-                        // True asks the recorder for a key frame (the link fell behind).
-                        capture::Event::Frame { data, key } => {
-                            let frame = ScreenFrame {
-                                data,
-                                key,
-                                config: false,
-                            };
-                            plugin.frame(peer.id, &frame).unwrap_or(false)
+                        true
+                    }
+                    // True asks the recorder for a key frame (the link fell behind).
+                    capture::Event::Frame { data, key } => {
+                        let frame = ScreenFrame {
+                            data,
+                            key,
+                            config: false,
+                        };
+                        plugin.frame(peer.id, &frame).unwrap_or(false)
+                    }
+                    capture::Event::Stopped(reason) => {
+                        if !on_stop.swap(true, Ordering::SeqCst) {
+                            b.screens.stop_cast(peer.id, Some(&reason));
                         }
-                        capture::Event::Stopped(reason) => {
-                            if !on_stop.swap(true, Ordering::SeqCst) {
-                                b.screens.stop_cast(peer.id, Some(&reason));
-                            }
-                            false
-                        }
+                        false
                     }
                 }
-            }),
-        )
+            }
+        }))
         .map_err(|e| format!("can't record the screen: {e}"))?;
         let monitor = recording.monitor();
-        lock(&self.casts).insert(from.id, Cast { recording, monitor });
+        lock(&self.casts).insert(
+            from.id,
+            Cast {
+                recording,
+                monitor,
+                held: Vec::new(),
+            },
+        );
         tracing::info!(device = %from.id, "sharing this PC's screen");
         // "Your screen is being shared", with a way to stop it.
         if let Some(b) = weak.upgrade() {
@@ -295,6 +311,14 @@ impl Screens {
             return;
         };
         cast.recording.stop();
+        if let Some(b) = self.backend.upgrade() {
+            for button in cast.held {
+                b.input.button(PointerButton {
+                    button,
+                    action: ButtonAction::Release,
+                });
+            }
+        }
         tracing::info!(device = %peer, reason, "stopped sharing this PC's screen");
         if let (Some(reason), Some(plugin)) = (reason, self.plugin()) {
             let _ = plugin.stopped(peer, reason);
@@ -305,7 +329,8 @@ impl Screens {
         }
     }
 
-    /// The phone's touches and keys, as this PC's pointer and keyboard.
+    /// The viewer's touches and keys (a phone) or mouse and keyboard (a PC), as this PC's
+    /// pointer and keyboard.
     pub fn cast_input(&self, from: &PeerInfo, input: ScreenInput) {
         let Some(b) = self.backend.upgrade() else {
             return;
@@ -379,6 +404,38 @@ impl Screens {
                 text: Some(text),
                 key: None,
                 modifiers: Modifiers::default(),
+            }),
+            // Another PC's mouse and keyboard.
+            ScreenInput::Pointer { x, y } => pc.move_to(at(x, y)),
+            ScreenInput::Button {
+                x,
+                y,
+                button,
+                action,
+            } => {
+                if let Some(cast) = lock(&self.casts).get_mut(&from.id) {
+                    cast.held.retain(|b| *b != button);
+                    if action == ButtonAction::Press {
+                        cast.held.push(button);
+                    }
+                }
+                pc.move_to(at(x, y));
+                pc.button(PointerButton { button, action });
+            }
+            ScreenInput::Wheel { dx, dy } => pc.pointer(pairly_plugins::input::PointerMotion {
+                dx: 0.0,
+                dy: 0.0,
+                scroll_x: dx,
+                scroll_y: dy,
+            }),
+            ScreenInput::Combo {
+                key,
+                text,
+                modifiers,
+            } => pc.key(KeyInput {
+                text,
+                key,
+                modifiers,
             }),
         }
     }
@@ -463,4 +520,80 @@ fn url_escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use pairly_plugins::input::{ButtonAction, Modifiers, MouseButton, SpecialKey};
+    use pairly_plugins::screen::ScreenInput;
+
+    /// What `screen.js` sends for another PC's screen reads as the right input.
+    #[test]
+    fn the_viewers_pc_input_reads() {
+        let read = |json: &str| serde_json::from_str::<ScreenInput>(json).unwrap();
+        assert_eq!(
+            read(r#"{"kind":"pointer","x":0.25,"y":0.5}"#),
+            ScreenInput::Pointer { x: 0.25, y: 0.5 }
+        );
+        assert_eq!(
+            read(r#"{"kind":"button","x":0.1,"y":0.2,"button":"right","action":"press"}"#),
+            ScreenInput::Button {
+                x: 0.1,
+                y: 0.2,
+                button: MouseButton::Right,
+                action: ButtonAction::Press,
+            }
+        );
+        assert_eq!(
+            read(r#"{"kind":"wheel","dx":0,"dy":-1.5}"#),
+            ScreenInput::Wheel { dx: 0.0, dy: -1.5 }
+        );
+        let mods = |ctrl, alt, shift, logo| Modifiers {
+            ctrl,
+            alt,
+            shift,
+            logo,
+        };
+        assert_eq!(
+            read(
+                r#"{"kind":"combo","key":{"f":5},"modifiers":{"ctrl":false,"alt":true,"shift":false,"super":false}}"#
+            ),
+            ScreenInput::Combo {
+                key: Some(SpecialKey::F(5)),
+                text: None,
+                modifiers: mods(false, true, false, false),
+            }
+        );
+        assert_eq!(
+            read(
+                r#"{"kind":"combo","key":"page_down","modifiers":{"ctrl":true,"alt":false,"shift":true,"super":false}}"#
+            ),
+            ScreenInput::Combo {
+                key: Some(SpecialKey::PageDown),
+                text: None,
+                modifiers: mods(true, false, true, false),
+            }
+        );
+        assert_eq!(
+            read(
+                r#"{"kind":"combo","text":"c","modifiers":{"ctrl":true,"alt":false,"shift":false,"super":false}}"#
+            ),
+            ScreenInput::Combo {
+                key: None,
+                text: Some("c".into()),
+                modifiers: mods(true, false, false, false),
+            }
+        );
+        // The Windows key alone.
+        assert_eq!(
+            read(
+                r#"{"kind":"combo","modifiers":{"ctrl":false,"alt":false,"shift":false,"super":true}}"#
+            ),
+            ScreenInput::Combo {
+                key: None,
+                text: None,
+                modifiers: mods(false, false, false, true),
+            }
+        );
+    }
 }

@@ -85,6 +85,9 @@ dismiss_on_phone = true     # closing a phone's notification here clears it on t
 
 [power]
 from_phone = true           # paired phones may lock, power off or restart this PC
+
+[screen]
+share_with_phones = true    # paired phones and PCs may view and control this screen (same Wi-Fi)
 ```
 
 Replies to phone notifications use the notification server's inline reply field when it has
@@ -101,6 +104,9 @@ config, so pairlyd reads that setting and uses a small reply window instead. Cha
 - **Commands:** the terminal icon (or the **Commands** tile) sets which commands the phone may
   run here. The phone can only run commands from that list, after confirming, and each run shows
   a notification.
+- **Screens:** **Phone Screen** shows the phone's screen in a window to control with clicks and
+  drags; **PC Screen** (on another PC's page, Linux or Windows) shows that PC's, controlled with
+  your mouse and keyboard, shortcuts included. Same Wi-Fi only; the shared PC shows a notification.
 - **Touchpad, keyboard, presenter:** driven from the phone. They need a compositor with the
   wlroots virtual pointer and keyboard protocols (Hyprland, Sway, river).
 

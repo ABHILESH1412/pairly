@@ -1,14 +1,18 @@
-//! `pairly-gtk --screen <name>`: shows a phone's screen and controls it.
+//! `pairly-gtk --screen <name> [--pc]`: shows a phone's (or, with `--pc`, another PC's) screen
+//! and controls it.
 //!
-//! pairlyd starts this when you ask to see a phone's screen. It writes the stream on stdin as
+//! pairlyd starts this when you ask to see a device's screen. It writes the stream on stdin as
 //! messages `[kind u8][length u32 BE][payload]`:
 //! - 1 started: `[width u32][height u32]`;
 //! - 2 frame: `[flags u8][H.264 access unit]` (flag 1: key frame);
 //! - 3 stopped: the reason, UTF-8.
 //!
 //! What you do in the window goes back on stdout, one line each (positions are fractions of
-//! the video): `tap x y`, `long x y`, `swipe <ms> x1 y1 x2 y2 …`, `key back|home|recents|enter|
-//! backspace`, `text <text>` and `stop`. Closing the window ends the stream.
+//! the video). A phone gets touches: `tap x y`, `long x y`, `swipe <ms> x1 y1 x2 y2 …`,
+//! `key back|home|recents|enter|backspace`, `text <text>`. A PC gets the mouse and keyboard:
+//! `move x y`, `button left|right|middle press|release x y`, `wheel dx dy` and
+//! `combo <ctrl+alt+shift+super or -> [key <name>|text <text>]`. Then `stop`. Closing the
+//! window ends the stream.
 //!
 //! Video is decoded by GStreamer (hardware decoding when the GPU has it) into a GTK picture.
 
@@ -41,7 +45,7 @@ fn emit(line: &str) {
     }
 }
 
-pub fn run(title: &str) {
+pub fn run(title: &str, pc: bool) {
     if let Err(e) = gtk::init() {
         eprintln!("pairly-gtk --screen: can't open the display: {e}");
         std::process::exit(1);
@@ -79,8 +83,13 @@ pub fn run(title: &str) {
         .hexpand(true)
         .vexpand(true)
         .build();
+    let waiting = if pc {
+        "Waiting for the PC… it may ask which screen to share."
+    } else {
+        "Waiting for the phone… accept “Start recording” on it."
+    };
     let status = gtk::Label::builder()
-        .label("Waiting for the phone… accept “Start recording” on it.")
+        .label(waiting)
         .wrap(true)
         .justify(gtk::Justification::Center)
         .css_classes(["title-3"])
@@ -92,14 +101,31 @@ pub fn run(title: &str) {
     stack.add_named(&picture, Some("video"));
 
     let header = adw::HeaderBar::new();
-    let window_title = adw::WindowTitle::new(title, "Phone screen");
+    let window_title = adw::WindowTitle::new(title, if pc { "PC screen" } else { "Phone screen" });
     header.set_title_widget(Some(&window_title));
-    for (icon, tip, key) in [
-        ("go-previous-symbolic", "Back", "back"),
-        ("go-home-symbolic", "Home", "home"),
-        ("view-app-grid-symbolic", "Recent Apps", "recents"),
-    ] {
-        // Never keyboard-focused: Space and Enter are for typing on the phone, not for
+    // Keys this desktop keeps for itself (the Super key, Alt+Tab) as buttons.
+    let buttons: &[(&str, &str, &str)] = if pc {
+        &[
+            (
+                "view-app-grid-symbolic",
+                "Start Menu (Super key)",
+                "combo super",
+            ),
+            (
+                "focus-windows-symbolic",
+                "Switch Windows (Alt+Tab)",
+                "combo alt key tab",
+            ),
+        ]
+    } else {
+        &[
+            ("go-previous-symbolic", "Back", "key back"),
+            ("go-home-symbolic", "Home", "key home"),
+            ("view-app-grid-symbolic", "Recent Apps", "key recents"),
+        ]
+    };
+    for &(icon, tip, line) in buttons {
+        // Never keyboard-focused: Space and Enter are for typing on the other device, not for
         // pressing these.
         let button = gtk::Button::builder()
             .icon_name(icon)
@@ -107,22 +133,30 @@ pub fn run(title: &str) {
             .focusable(false)
             .focus_on_click(false)
             .build();
-        button.connect_clicked(move |_| emit(&format!("key {key}")));
+        button.connect_clicked(move |_| emit(line));
         header.pack_start(&button);
     }
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
     view.set_content(Some(&stack));
+    let (width, height) = if pc { (1280, 800) } else { (420, 880) };
     let window = adw::Window::builder()
-        .title(format!("{title} – Phone Screen"))
-        .default_width(420)
-        .default_height(880)
+        .title(format!(
+            "{title} – {} Screen",
+            if pc { "PC" } else { "Phone" }
+        ))
+        .default_width(width)
+        .default_height(height)
         .content(&view)
         .build();
 
     // The video's size, for mapping the pointer onto it.
     let video = Rc::new(Cell::new((0_u32, 0_u32)));
-    connect_input(&picture, &window, &video);
+    if pc {
+        connect_pc_input(&picture, &window, &video);
+    } else {
+        connect_input(&picture, &window, &video);
+    }
 
     let main_loop = gtk::glib::MainLoop::new(None, false);
     window.connect_close_request({
@@ -149,9 +183,18 @@ pub fn run(title: &str) {
                     Msg::Started(w, h) => {
                         video.set((w, h));
                         stack.set_visible_child_name("video");
-                        window_title.set_subtitle("Click, drag and scroll to control it");
-                        // Fit a window of the phone's shape on screen.
-                        if h > 0 {
+                        window_title.set_subtitle(if pc {
+                            "Use the mouse and keyboard to control it"
+                        } else {
+                            "Click, drag and scroll to control it"
+                        });
+                        // Fit a window of the screen's shape.
+                        if pc && w > 0 {
+                            let height = i32::try_from(u64::from(h) * 1280 / u64::from(w))
+                                .unwrap_or(800)
+                                .min(900);
+                            window.set_default_size(1280, height.max(300));
+                        } else if h > 0 {
                             let height = 880;
                             let width =
                                 i32::try_from(u64::from(w) * 880 / u64::from(h)).unwrap_or(420);
@@ -219,8 +262,9 @@ fn read_stream(src: &gstreamer_app::AppSrc, tx: &relm4::Sender<Msg>) {
     tx.send(Msg::Stopped("the connection closed".into())).ok();
 }
 
-/// Where `(x, y)` in the picture falls on the video, as fractions; `None` outside it.
-fn to_video(picture: &gtk::Picture, video: (u32, u32), x: f64, y: f64) -> Option<(f64, f64)> {
+/// Where `(x, y)` in the picture falls on the video, as fractions (beyond 0–1 outside it);
+/// `None` before the video starts.
+fn video_point(picture: &gtk::Picture, video: (u32, u32), x: f64, y: f64) -> Option<(f64, f64)> {
     let (vw, vh) = (f64::from(video.0), f64::from(video.1));
     let (w, h) = (f64::from(picture.width()), f64::from(picture.height()));
     if vw <= 0.0 || vh <= 0.0 || w <= 0.0 || h <= 0.0 {
@@ -229,8 +273,13 @@ fn to_video(picture: &gtk::Picture, video: (u32, u32), x: f64, y: f64) -> Option
     let scale = (w / vw).min(h / vh);
     let (dw, dh) = (vw * scale, vh * scale);
     let (ox, oy) = ((w - dw) / 2.0, (h - dh) / 2.0);
-    let (fx, fy) = ((x - ox) / dw, (y - oy) / dh);
-    ((0.0..=1.0).contains(&fx) && (0.0..=1.0).contains(&fy)).then_some((fx, fy))
+    Some(((x - ox) / dw, (y - oy) / dh))
+}
+
+/// Where `(x, y)` in the picture falls on the video, as fractions; `None` outside it.
+fn to_video(picture: &gtk::Picture, video: (u32, u32), x: f64, y: f64) -> Option<(f64, f64)> {
+    video_point(picture, video, x, y)
+        .filter(|(fx, fy)| (0.0..=1.0).contains(fx) && (0.0..=1.0).contains(fy))
 }
 
 /// A press in progress: when it started, the points (on the video) it went through, and where
@@ -336,6 +385,214 @@ fn connect_input(picture: &gtk::Picture, window: &adw::Window, video: &Rc<Cell<(
         };
         emit(&line);
         gtk::glib::Propagation::Stop
+    });
+    window.add_controller(keys);
+}
+
+/// The mouse button a GTK button number is, by name.
+fn button_name(button: u32) -> Option<&'static str> {
+    match button {
+        1 => Some("left"),
+        2 => Some("middle"),
+        3 => Some("right"),
+        _ => None,
+    }
+}
+
+/// Held modifiers as `ctrl+alt+shift+super` (or `-` for none).
+fn modifiers_word(state: gtk::gdk::ModifierType) -> String {
+    use gtk::gdk::ModifierType as M;
+    let held: Vec<&str> = [
+        (M::CONTROL_MASK, "ctrl"),
+        (M::ALT_MASK, "alt"),
+        (M::SHIFT_MASK, "shift"),
+        (M::SUPER_MASK, "super"),
+    ]
+    .into_iter()
+    .filter_map(|(mask, name)| state.contains(mask).then_some(name))
+    .collect();
+    if held.is_empty() {
+        "-".to_owned()
+    } else {
+        held.join("+")
+    }
+}
+
+/// A key that isn't text, by the name pairlyd knows.
+fn special_name(key: gtk::gdk::Key) -> Option<String> {
+    use gtk::gdk::Key;
+    let name = match key {
+        Key::Return | Key::KP_Enter => "enter",
+        Key::BackSpace => "backspace",
+        Key::Delete | Key::KP_Delete => "delete",
+        Key::Tab | Key::ISO_Left_Tab => "tab",
+        Key::Escape => "escape",
+        Key::Left | Key::KP_Left => "left",
+        Key::Right | Key::KP_Right => "right",
+        Key::Up | Key::KP_Up => "up",
+        Key::Down | Key::KP_Down => "down",
+        Key::Home | Key::KP_Home => "home",
+        Key::End | Key::KP_End => "end",
+        Key::Page_Up | Key::KP_Page_Up => "page_up",
+        Key::Page_Down | Key::KP_Page_Down => "page_down",
+        Key::space => "space",
+        Key::AudioRaiseVolume => "volume_up",
+        Key::AudioLowerVolume => "volume_down",
+        Key::AudioMute => "mute",
+        _ => {
+            // F1 … F24.
+            let name = key.name()?;
+            let n: u8 = name.strip_prefix('F')?.parse().ok()?;
+            return (1..=24).contains(&n).then(|| format!("f{n}"));
+        }
+    };
+    Some(name.to_owned())
+}
+
+/// What a key press sends to another PC, if anything: special keys and shortcuts with the
+/// modifiers held, plain characters as text (Shift is already in them).
+fn pc_key_line(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> Option<String> {
+    let mods = modifiers_word(state);
+    let shortcut = ["ctrl", "alt", "super"].iter().any(|m| mods.contains(m));
+    if let Some(name) = special_name(key) {
+        // A plain Space is text.
+        return Some(if name == "space" && !shortcut {
+            "combo - text  ".to_owned()
+        } else {
+            format!("combo {mods} key {name}")
+        });
+    }
+    let c = key.to_unicode().filter(|c| !c.is_control())?;
+    Some(if shortcut {
+        // Ctrl+Shift+T comes as "T": the key is "t", Shift is in the modifiers.
+        format!("combo {mods} text {}", c.to_lowercase())
+    } else {
+        format!("combo - text {c}")
+    })
+}
+
+/// A mouse button held down on another PC, and where (on the video).
+type HeldButton = (&'static str, (f64, f64));
+
+/// Another PC: the pointer, its buttons, the wheel and the keyboard (shortcuts included) go
+/// there as they are.
+fn connect_pc_input(picture: &gtk::Picture, window: &adw::Window, video: &Rc<Cell<(u32, u32)>>) {
+    // On the video, held to its edges (a drag may go past them).
+    let point = {
+        let (picture, video) = (picture.clone(), video.clone());
+        move |x: f64, y: f64| {
+            video_point(&picture, video.get(), x, y)
+                .map(|(fx, fy)| (fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0)))
+        }
+    };
+    // Buttons held down there (and where), let go if this window loses focus mid-drag.
+    let held: Rc<RefCell<Vec<HeldButton>>> = Rc::default();
+
+    let motion = gtk::EventControllerMotion::new();
+    motion.connect_motion({
+        let (picture, video, point, held) =
+            (picture.clone(), video.clone(), point.clone(), held.clone());
+        move |_, x, y| {
+            // Outside the video only while dragging.
+            let at = if held.borrow().is_empty() {
+                to_video(&picture, video.get(), x, y)
+            } else {
+                point(x, y)
+            };
+            if let Some((fx, fy)) = at {
+                emit(&format!("move {fx:.4} {fy:.4}"));
+            }
+        }
+    });
+    picture.add_controller(motion);
+
+    // Any button: pressed where it happens, released where the pointer is then.
+    let drag = gtk::GestureDrag::new();
+    drag.set_button(0);
+    drag.connect_drag_begin({
+        let (point, held) = (point.clone(), held.clone());
+        move |gesture, x, y| {
+            let (Some(name), Some((fx, fy))) = (button_name(gesture.current_button()), point(x, y))
+            else {
+                return;
+            };
+            held.borrow_mut().push((name, (fx, fy)));
+            emit(&format!("button {name} press {fx:.4} {fy:.4}"));
+        }
+    });
+    drag.connect_drag_end({
+        let held = held.clone();
+        move |gesture, dx, dy| {
+            let Some(name) = button_name(gesture.current_button()) else {
+                return;
+            };
+            held.borrow_mut().retain(|(b, _)| *b != name);
+            let at = gesture
+                .start_point()
+                .and_then(|(x, y)| point(x + dx, y + dy));
+            if let Some((fx, fy)) = at {
+                emit(&format!("button {name} release {fx:.4} {fy:.4}"));
+            }
+        }
+    });
+    picture.add_controller(drag);
+    window.connect_is_active_notify({
+        let held = held.clone();
+        move |w| {
+            if !w.is_active() {
+                for (name, (fx, fy)) in held.borrow_mut().drain(..) {
+                    emit(&format!("button {name} release {fx:.4} {fy:.4}"));
+                }
+            }
+        }
+    });
+
+    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+    scroll.connect_scroll(|_, dx, dy| {
+        emit(&format!("wheel {dx:.3} {dy:.3}"));
+        gtk::glib::Propagation::Stop
+    });
+    picture.add_controller(scroll);
+
+    // Keys go over as they're pressed. The Super key alone (pressed and let go with nothing in
+    // between) opens the Start menu or overview there. Captured before any widget sees them.
+    let lone_super = Rc::new(Cell::new(false));
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    keys.connect_key_pressed({
+        let lone_super = lone_super.clone();
+        move |_, key, _, state| {
+            use gtk::gdk::Key;
+            let is_super = matches!(key, Key::Super_L | Key::Super_R);
+            lone_super.set(is_super);
+            let modifier = matches!(
+                key,
+                Key::Control_L
+                    | Key::Control_R
+                    | Key::Shift_L
+                    | Key::Shift_R
+                    | Key::Alt_L
+                    | Key::Alt_R
+                    | Key::Meta_L
+                    | Key::Meta_R
+                    | Key::ISO_Level3_Shift
+                    | Key::Caps_Lock
+                    | Key::Num_Lock
+            );
+            if !(is_super || modifier) {
+                match pc_key_line(key, state) {
+                    Some(line) => emit(&line),
+                    None => return gtk::glib::Propagation::Proceed,
+                }
+            }
+            gtk::glib::Propagation::Stop
+        }
+    });
+    keys.connect_key_released(move |_, key, _, _| {
+        use gtk::gdk::Key;
+        if matches!(key, Key::Super_L | Key::Super_R) && lone_super.replace(false) {
+            emit("combo super");
+        }
     });
     window.add_controller(keys);
 }
