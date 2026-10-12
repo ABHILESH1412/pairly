@@ -1992,6 +1992,7 @@ dependencies = [
  "quinn",
  "rcgen",
  "rustls",
+ "socket2",
  "tokio",
  "tracing",
 ]
@@ -2007,6 +2008,7 @@ dependencies = [
  "rcgen",
  "ring",
  "rustls",
+ "socket2",
  "tokio",
  "tracing",
 ]

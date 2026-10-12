@@ -150,7 +150,9 @@ with open(path, "w") as f:
     json.dump(conf, f, indent=2)
     f.write("\n")
 PY
-(cd pairly-windows/src-tauri && cargo metadata --offline --format-version 1 >/dev/null)
+# Online: this PC never builds the Windows app, so its Windows-only crates may not be
+# downloaded yet. The lock file still keeps every other dependency as it is.
+(cd pairly-windows/src-tauri && cargo metadata --format-version 1 >/dev/null)
 code="$(sed -n 's/^ *versionCode = \([0-9]*\)/\1/p' "$gradle")"
 sed -i "s/^\( *versionCode = \)[0-9]*/\1$((code + 1))/; s/^\( *versionName = \)\".*\"/\1\"$version\"/" "$gradle"
 sed -i "s/^pkgver=.*/pkgver=$version/; s/^pkgrel=.*/pkgrel=1/; s/^sha256sums=.*/sha256sums=('SKIP')/" "$pkgbuild"
