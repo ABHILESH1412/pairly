@@ -2,6 +2,7 @@
 //! The input library isn't thread-safe everywhere, so one thread owns it and takes commands.
 
 use std::sync::mpsc::{Sender, channel};
+use std::time::Duration;
 
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use pairly_plugins::input::{
@@ -12,6 +13,10 @@ enum Cmd {
     Motion(PointerMotion),
     Button(PointerButton),
     Key(KeyInput),
+    /// To a place on the desktop, in pixels.
+    MoveTo(i32, i32),
+    /// Hold the left button through these places, `step` apart.
+    Drag(Vec<(i32, i32)>, Duration),
 }
 
 pub struct RemoteInput {
@@ -71,6 +76,24 @@ impl RemoteInput {
                             enigo.button(button, direction)
                         }
                         Cmd::Key(k) => type_key(&mut enigo, &k),
+                        Cmd::MoveTo(x, y) => enigo.move_mouse(x, y, Coordinate::Abs),
+                        Cmd::Drag(points, step) => {
+                            let mut points = points.into_iter();
+                            match points.next() {
+                                Some((x, y)) => enigo
+                                    .move_mouse(x, y, Coordinate::Abs)
+                                    .and_then(|()| enigo.button(Button::Left, Direction::Press))
+                                    .and_then(|()| {
+                                        for (x, y) in points {
+                                            std::thread::sleep(step);
+                                            enigo.move_mouse(x, y, Coordinate::Abs)?;
+                                        }
+                                        Ok(())
+                                    })
+                                    .and(enigo.button(Button::Left, Direction::Release)),
+                                None => Ok(()),
+                            }
+                        }
                     };
                     if let Err(e) = result {
                         tracing::debug!(error = %e, "remote input failed");
@@ -91,6 +114,16 @@ impl RemoteInput {
 
     pub fn key(&self, key: KeyInput) {
         let _ = self.tx.send(Cmd::Key(key));
+    }
+
+    pub fn move_to(&self, (x, y): (i32, i32)) {
+        let _ = self.tx.send(Cmd::MoveTo(x, y));
+    }
+
+    pub fn drag(&self, points: Vec<(i32, i32)>, step: Duration) {
+        if points.len() >= 2 {
+            let _ = self.tx.send(Cmd::Drag(points, step));
+        }
     }
 }
 

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Pairly pointer</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+    /* A glowing red dot, like a presenter's laser. */
+    #dot {
+      position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%;
+      background: radial-gradient(circle, #fff 0 4px, #ff2020 6px, rgba(255, 32, 32, .55) 11px, rgba(255, 32, 32, 0) 22px);
+      opacity: 0; transition: opacity .12s; pointer-events: none; will-change: transform;
+    }
+    #dot.on { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="dot"></div>
+  <script src="laser.js"></script>
+</body>
+</html>

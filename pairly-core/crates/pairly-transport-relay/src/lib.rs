@@ -81,8 +81,17 @@ impl RelayTransport {
 }
 
 fn bind() -> io::Result<UdpSocket> {
-    UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0))
-        .or_else(|_| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)))
+    dual_stack().or_else(|_| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)))
+}
+
+/// `[::]:0`, reaching IPv4 relays as well. Linux and Android do that by default; Windows makes
+/// IPv6 sockets IPv6-only unless asked, and then can't reach a relay with an IPv4 address.
+fn dual_stack() -> io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_only_v6(false)?;
+    socket.bind(&std::net::SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)).into())?;
+    Ok(socket.into())
 }
 
 /// Candidate addresses are `<room hex> <relay address>`; only this transport reads them.

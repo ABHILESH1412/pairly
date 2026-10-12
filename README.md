@@ -1,7 +1,7 @@
 # Pairly
 
-Connect your Android phone and your Linux PC, like KDE Connect: notifications, texts, calls,
-files, clipboard, media and remote input. Everything is end-to-end encrypted, over Wi-Fi,
+Connect your Android phone and your Linux or Windows PC, like KDE Connect: notifications, texts,
+calls, files, clipboard, media and remote input. Everything is end-to-end encrypted, over Wi-Fi,
 Bluetooth or your own relay.
 
 ## What it does
@@ -46,6 +46,10 @@ Then open **Pairly** from the app menu. The build takes a few minutes and about 
 and KDE go through the RemoteDesktop portal, which isn't tested yet. The `uinput` fallback works
 anywhere the user can write to `/dev/uinput` (recent systemd grants that to the logged-in user).
 
+**Windows 10 or 11:** download `pairly-X.Y.Z-windows-x64-setup.exe` from
+[Releases](https://github.com/ABHILESH1412/pairly/releases) and run it (no admin rights needed).
+Pairly then runs in the tray.
+
 **Android 8 or newer:** download `pairly-X.Y.Z.apk` from
 [Releases](https://github.com/ABHILESH1412/pairly/releases) and install it.
 
@@ -79,6 +83,7 @@ The details, including what a paired device is trusted to do, are in
 | Part | Folder | Command |
 |---|---|---|
 | Linux app and daemon | `pairly-linux` | `make install-user` (installs under `~/.local` and starts the service) |
+| Windows app | `pairly-windows` | `cargo run` in `src-tauri` (needs the Visual Studio C++ build tools) |
 | Android app | `pairly-android` | `./gradlew installDebug` (needs the Android SDK and NDK, and `cargo-ndk`) |
 | Relay | `pairly-core` | `cargo build --release -p pairly-relay` |
 

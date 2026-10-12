@@ -19,6 +19,29 @@ pub struct Settings {
     pub clipboard_auto: bool,
     /// The device list shows beside the device (wide windows).
     pub sidebar: bool,
+    /// A relay for reaching devices over the internet (`pairly-relay://…`); paired phones
+    /// learn it from this PC.
+    pub relay: Option<String>,
+    /// Pad what goes through the relay to 256-byte steps (hides exact message sizes).
+    pub relay_padding: bool,
+    /// Reach bonded devices over Bluetooth when there is no shared network.
+    pub bluetooth: bool,
+    /// Show the phone's notifications here.
+    pub show_notifications: bool,
+    /// Closing a phone's notification here clears it on the phone.
+    pub dismiss_on_phone: bool,
+    /// Send this PC's notifications to paired phones.
+    pub send_notifications: bool,
+    /// Apps whose notifications are never sent.
+    pub muted_apps: Vec<String>,
+    /// Pause this PC's music while the phone rings or is in a call.
+    pub pause_media_for_calls: bool,
+    /// Paired phones may lock, restart or power off this PC.
+    pub power_from_phone: bool,
+    /// Paired phones may view and control this screen (same network).
+    pub share_screen: bool,
+    /// Open links sent from the phone straight away (else: a notification to open them).
+    pub open_links: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +53,17 @@ impl Default for Settings {
             auto_update: true,
             clipboard_auto: true,
             sidebar: true,
+            relay: None,
+            relay_padding: true,
+            bluetooth: true,
+            show_notifications: true,
+            dismiss_on_phone: true,
+            send_notifications: true,
+            muted_apps: Vec::new(),
+            pause_media_for_calls: true,
+            power_from_phone: true,
+            share_screen: true,
+            open_links: true,
         }
     }
 }
@@ -66,4 +100,19 @@ pub fn computer_name() -> String {
         })
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "Windows PC".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_files_still_load() {
+        let old = r#"{"theme":"dark","name":null,"enabled":true,"auto_update":false,
+            "clipboard_auto":true,"sidebar":true}"#;
+        let s: Settings = serde_json::from_str(old).unwrap_or_default();
+        assert_eq!(s.theme, "dark");
+        assert!(!s.auto_update);
+        assert!(s.show_notifications && s.share_screen && s.relay.is_none());
+    }
 }

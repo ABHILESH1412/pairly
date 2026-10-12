@@ -11,7 +11,6 @@ use clap::Parser;
 use pairly_relay::{Config, Relay};
 use pairly_transport_relay::proto::{DEFAULT_PORT, RelayAddr};
 use pairly_transport_relay::tls;
-use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -65,17 +64,34 @@ fn load_or_create_cert(dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     std::fs::write(&cert_path, &cert)?;
     {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Readable only by the relay's user (Windows: the folder's permissions apply).
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut f = options
             .open(&key_path)
             .with_context(|| format!("creating {}", key_path.display()))?;
         f.write_all(&key)?;
     }
     info!(dir = %dir.display(), "created a new relay certificate");
     Ok((cert, key))
+}
+
+/// Ctrl+C, or (on Unix) the service manager's SIGTERM.
+async fn stopped() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -124,11 +140,7 @@ async fn main() -> Result<()> {
         Arc::clone(&stats),
         Duration::from_secs(args.stats_interval.max(10)),
     ));
-    let mut term = signal(SignalKind::terminate())?;
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
-    }
+    stopped().await?;
     info!("shutting down: {}", stats.summary());
     report.abort();
     relay.shutdown().await;

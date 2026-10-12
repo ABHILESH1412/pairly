@@ -96,8 +96,17 @@ pub async fn accept_stream(incoming: quinn::Incoming) -> Result<QuicStream> {
 }
 
 fn bind_socket(port: u16) -> io::Result<UdpSocket> {
-    UdpSocket::bind((Ipv6Addr::UNSPECIFIED, port))
-        .or_else(|_| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)))
+    dual_stack(port).or_else(|_| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)))
+}
+
+/// `[::]:port`, taking IPv4 as well. Linux and Android do that by default; Windows makes IPv6
+/// sockets IPv6-only unless asked, and then can't reach (or hear) any IPv4 peer.
+fn dual_stack(port: u16) -> io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_only_v6(false)?;
+    socket.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+    Ok(socket.into())
 }
 
 fn provider() -> Arc<CryptoProvider> {

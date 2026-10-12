@@ -77,13 +77,34 @@ pub struct Relay {
     task: JoinHandle<()>,
 }
 
+/// The UDP socket to serve on. `[::]` takes IPv4 as well: Linux does that by default, Windows
+/// only when asked.
+fn bind(listen: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(
+        Domain::for_address(listen),
+        Type::DGRAM,
+        Some(Protocol::UDP),
+    )?;
+    if listen.is_ipv6() && listen.ip().is_unspecified() {
+        let _ = socket.set_only_v6(false);
+    }
+    socket.bind(&listen.into())?;
+    Ok(socket.into())
+}
+
 impl Relay {
     /// Bind and start serving with the given certificate (`tls::generate_cert` makes one).
     pub fn start(config: Config, cert_der: Vec<u8>, key_der: Vec<u8>) -> anyhow::Result<Self> {
         let pin = tls::pin_of(&cert_der);
         let server =
             tls::server_config(cert_der, key_der, 512).map_err(anyhow::Error::from_boxed)?;
-        let endpoint = quinn::Endpoint::server(server, config.listen)?;
+        let endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server),
+            bind(config.listen)?,
+            Arc::new(quinn::TokioRuntime),
+        )?;
         let stats = Arc::new(Stats::default());
         let hub = Arc::new(Hub::new(config.rate_limit, stats.clone()));
         let task = tokio::spawn(accept_loop(

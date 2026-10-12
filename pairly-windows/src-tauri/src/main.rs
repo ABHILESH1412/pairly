@@ -4,7 +4,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod commands;
+mod hosts;
+mod phone;
 mod platform;
+mod screen;
 mod settings;
 mod update;
 
@@ -124,14 +128,249 @@ fn set_theme(backend: Backends<'_>, theme: String) {
 }
 
 #[tauri::command]
-fn set_option(backend: Backends<'_>, key: String, on: bool) {
+async fn set_option(backend: Backends<'_>, key: String, on: bool) -> Answer {
+    let restart = matches!(key.as_str(), "bluetooth" | "relay_padding");
     backend.change_settings(|s| match key.as_str() {
         "auto_update" => s.auto_update = on,
         "clipboard_auto" => s.clipboard_auto = on,
         "sidebar" => s.sidebar = on,
+        "bluetooth" => s.bluetooth = on,
+        "relay_padding" => s.relay_padding = on,
+        "show_notifications" => s.show_notifications = on,
+        "dismiss_on_phone" => s.dismiss_on_phone = on,
+        "send_notifications" => s.send_notifications = on,
+        "pause_media_for_calls" => s.pause_media_for_calls = on,
+        "power_from_phone" => s.power_from_phone = on,
+        "share_screen" => s.share_screen = on,
+        "open_links" => s.open_links = on,
         _ => {}
     });
+    if restart && backend.settings().enabled {
+        backend.inner().restart().await.map_err(text)?;
+    }
     backend.emit();
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_relay(backend: Backends<'_>, address: String) -> Answer {
+    backend.inner().set_relay(&address).await.map_err(text)
+}
+
+// ----- texts, contacts and calls -------------------------------------------------------------
+
+#[tauri::command]
+async fn conversations(
+    backend: Backends<'_>,
+    id: String,
+) -> Answer<Vec<pairly_plugins::sms::Conversation>> {
+    backend.conversations(&id).await.map_err(text)
+}
+
+#[tauri::command]
+async fn messages(
+    backend: Backends<'_>,
+    id: String,
+    thread: i64,
+    before: i64,
+) -> Answer<Vec<pairly_plugins::sms::Message>> {
+    backend.messages(&id, thread, before).await.map_err(text)
+}
+
+#[tauri::command]
+fn send_sms(
+    backend: Backends<'_>,
+    id: String,
+    addresses: Vec<String>,
+    body: String,
+    files: Vec<String>,
+) -> Answer {
+    backend
+        .send_sms(&id, addresses, &body, &files)
+        .map_err(text)
+}
+
+#[tauri::command]
+async fn sms_attachment(
+    backend: Backends<'_>,
+    id: String,
+    part: i64,
+    name: String,
+    mime: String,
+) -> Answer<phone::AttachmentView> {
+    backend
+        .sms_attachment(&id, part, &name, &mime)
+        .await
+        .map_err(text)
+}
+
+#[tauri::command]
+async fn contacts(
+    backend: Backends<'_>,
+    id: String,
+) -> Answer<Vec<pairly_plugins::contacts::Contact>> {
+    backend.contacts(&id).await.map_err(text)
+}
+
+#[tauri::command]
+fn dial(backend: Backends<'_>, id: String, number: String) -> Answer {
+    backend.dial(&id, &number).map_err(text)
+}
+
+#[tauri::command]
+fn call_action(backend: Backends<'_>, id: String, action: String) -> Answer {
+    backend.call_action(&id, &action).map_err(text)
+}
+
+// ----- the phone's files ---------------------------------------------------------------------
+
+#[tauri::command]
+async fn files_list(
+    backend: Backends<'_>,
+    id: String,
+    path: String,
+) -> Answer<Vec<pairly_plugins::files::Entry>> {
+    backend.files_list(&id, &path).await.map_err(text)
+}
+
+#[tauri::command]
+async fn files_download(
+    backend: Backends<'_>,
+    id: String,
+    path: String,
+    size: u64,
+) -> Answer<String> {
+    backend.files_download(&id, &path, size).await.map_err(text)
+}
+
+#[tauri::command]
+async fn files_upload(
+    backend: Backends<'_>,
+    id: String,
+    paths: Vec<String>,
+    dir: String,
+) -> Answer<usize> {
+    backend.files_upload(&id, &paths, &dir).await.map_err(text)
+}
+
+#[tauri::command]
+async fn files_op(
+    backend: Backends<'_>,
+    id: String,
+    op: String,
+    path: String,
+    to: String,
+) -> Answer {
+    backend.files_op(&id, &op, &path, &to).await.map_err(text)
+}
+
+#[tauri::command]
+fn open_path(path: String, folder: bool) {
+    if folder {
+        platform::show_in_folder(std::path::Path::new(&path));
+    } else {
+        platform::open(&path);
+    }
+}
+
+// ----- media ---------------------------------------------------------------------------------
+
+#[tauri::command]
+fn media_control(
+    backend: Backends<'_>,
+    id: String,
+    player: String,
+    action: String,
+    value: i64,
+) -> Answer {
+    backend
+        .media_control(&id, &player, &action, value)
+        .map_err(text)
+}
+
+#[tauri::command]
+fn artwork(backend: Backends<'_>, id: String, key: String) -> Option<String> {
+    backend.artwork(&id, &key)
+}
+
+// ----- commands phones may run here ----------------------------------------------------------
+
+#[tauri::command]
+fn list_commands(backend: Backends<'_>) -> Vec<commands::Command> {
+    backend.commands.list()
+}
+
+#[tauri::command]
+fn add_command(backend: Backends<'_>, name: String, command: String) -> Answer<String> {
+    backend.commands.add(&name, &command).map_err(text)
+}
+
+#[tauri::command]
+fn remove_command(backend: Backends<'_>, id: String) -> Answer {
+    backend.commands.remove(&id).map(|_| ()).map_err(text)
+}
+
+// ----- this PC's notifications ---------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct NotificationApps {
+    status: String,
+    apps: Vec<(String, bool)>,
+}
+
+#[tauri::command]
+fn notification_apps(backend: Backends<'_>) -> NotificationApps {
+    NotificationApps {
+        status: platform::listener::status(),
+        apps: backend.notification_apps(),
+    }
+}
+
+#[tauri::command]
+fn set_app_muted(backend: Backends<'_>, app: String, muted: bool) {
+    backend.change_settings(|s| {
+        s.muted_apps.retain(|a| a != &app);
+        if muted {
+            s.muted_apps.push(app);
+        }
+    });
+}
+
+// ----- screens -------------------------------------------------------------------------------
+
+// Async: a window made from the main thread (where plain commands run) deadlocks on Windows.
+#[tauri::command]
+async fn screen_open(backend: Backends<'_>, id: String) -> Answer {
+    let peer = backend::parse(&id).map_err(text)?;
+    let name = backend.device_name(peer);
+    backend.screens.open_viewer(peer, &name).map_err(text)
+}
+
+#[tauri::command]
+fn screen_watch(
+    backend: Backends<'_>,
+    id: String,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Answer {
+    let peer = backend::parse(&id).map_err(text)?;
+    backend.screens.watch(peer, channel).map_err(text)
+}
+
+#[tauri::command]
+fn screen_input(
+    backend: Backends<'_>,
+    id: String,
+    input: pairly_plugins::screen::ScreenInput,
+) -> Answer {
+    let peer = backend::parse(&id).map_err(text)?;
+    backend.screens.viewer_input(peer, input).map_err(text)
+}
+
+#[tauri::command]
+fn stop_cast(backend: Backends<'_>, id: String) -> Answer {
+    let peer = backend::parse(&id).map_err(text)?;
+    backend.screens.stop_cast(peer, Some("stopped on the PC"));
+    Ok(())
 }
 
 #[tauri::command]
@@ -196,11 +435,17 @@ fn main() {
         )
         .init();
     let background = std::env::args().any(|a| a == "--background");
-    tauri::Builder::default()
+    // For development: a separate data folder runs a second, independent Pairly (no
+    // single-instance lock, no start-with-Windows) beside the installed one.
+    let dev_data = std::env::var_os("PAIRLY_DATA_DIR").map(std::path::PathBuf::from);
+    let mut builder = tauri::Builder::default();
+    if dev_data.is_none() {
         // A second launch (Start menu, notification click) shows the running one.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app)
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
@@ -210,14 +455,19 @@ fn main() {
             Some(vec!["--background"]),
         ))
         .setup(move |app| {
-            let data = app.path().app_data_dir()?;
-            let downloads = app.path().download_dir()?.join("Pairly");
+            let (data, downloads) = match &dev_data {
+                Some(dir) => (dir.clone(), dir.join("Downloads")),
+                None => (
+                    app.path().app_data_dir()?,
+                    app.path().download_dir()?.join("Pairly"),
+                ),
+            };
             let backend = Backend::new(app.handle().clone(), data.clone(), downloads);
             app.manage(backend.clone());
             tray(app)?;
             // Start with Windows by default, once (the user can turn it off in Settings).
             let marker = data.join(".autostart-set");
-            if !marker.exists() {
+            if dev_data.is_none() && !marker.exists() {
                 let _ = app.autolaunch().enable();
                 let _ = std::fs::create_dir_all(&data);
                 let _ = std::fs::write(&marker, b"");
@@ -236,13 +486,26 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            // Closing the window keeps Pairly in the tray.
-            WindowEvent::CloseRequested { api, .. } => {
+            // A phone's screen window closed: the phone stops sharing.
+            WindowEvent::Destroyed => {
+                if let Some(peer) = window
+                    .label()
+                    .strip_prefix("screen-")
+                    .and_then(|id| backend::parse(id).ok())
+                    && let Some(backend) = window.app_handle().try_state::<Arc<Backend>>()
+                {
+                    backend.screens.viewer_closed(peer);
+                }
+            }
+            // Closing the main window keeps Pairly in the tray.
+            WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
                 api.prevent_close();
                 let _ = window.hide();
             }
             // Files dropped on the window go to the device on screen (the page decides).
-            WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
+            WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. })
+                if window.label() == "main" =>
+            {
                 let paths: Vec<String> = paths
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned())
@@ -273,6 +536,30 @@ fn main() {
             set_option,
             autostart,
             check_update,
+            set_relay,
+            conversations,
+            messages,
+            send_sms,
+            sms_attachment,
+            contacts,
+            dial,
+            call_action,
+            files_list,
+            files_download,
+            files_upload,
+            files_op,
+            open_path,
+            media_control,
+            artwork,
+            list_commands,
+            add_command,
+            remove_command,
+            notification_apps,
+            set_app_muted,
+            screen_open,
+            screen_watch,
+            screen_input,
+            stop_cast,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -40,6 +40,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 snow = "0.10"
+socket2 = "0.6"
 uniffi = "0.32"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "io-util"] }

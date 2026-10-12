@@ -1,8 +1,13 @@
 //! The PC itself: battery, power, ringing, the clipboard and remote input. Windows is the
 //! target; the other branches keep the app building and testable on a Linux machine.
 
+pub mod bluetooth;
+pub mod capture;
 pub mod clipboard;
 pub mod input;
+pub mod listener;
+pub mod media;
+pub mod toast;
 
 use pairly_plugins::battery::BatteryState;
 
@@ -58,7 +63,11 @@ pub fn power(action: pairly_plugins::power::PowerAction) -> Result<(), String> {
                     .map_err(|e| format!("couldn't lock: {e}"))
             }
             PowerAction::PowerOff | PowerAction::Restart => {
-                let flag = if action == PowerAction::PowerOff { "/s" } else { "/r" };
+                let flag = if action == PowerAction::PowerOff {
+                    "/s"
+                } else {
+                    "/r"
+                };
                 std::process::Command::new("shutdown")
                     .args([flag, "/t", "0"])
                     .status()
@@ -97,5 +106,23 @@ pub fn open(target: &str) {
     let result = std::process::Command::new("xdg-open").arg(target).spawn();
     if let Err(e) = result {
         tracing::warn!(error = %e, "couldn't open {target}");
+    }
+}
+
+/// Open the folder holding `path`, with the file selected.
+pub fn show_in_folder(path: &std::path::Path) {
+    #[cfg(windows)]
+    let result = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .spawn()
+    };
+    #[cfg(not(windows))]
+    let result = std::process::Command::new("xdg-open")
+        .arg(path.parent().unwrap_or(path))
+        .spawn();
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "couldn't show {}", path.display());
     }
 }
