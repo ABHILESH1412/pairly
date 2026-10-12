@@ -31,7 +31,9 @@
 //! enabled = true              # reach bonded devices over Bluetooth when there is no network
 //!
 //! [relay]
-//! address = "pairly-relay://TOKEN@relay.example.com:47200/PIN"   # printed by pairly-relay
+//! address = "wss://TOKEN@pairly-relay.NAME.workers.dev"           # your pairly-relay-worker, or
+//!                                                                  # pairly-relay://TOKEN@host:47200/PIN
+//!                                                                  # (printed by pairly-relay)
 //! padding = true              # hide exact message sizes from the relay (256-byte steps)
 //!
 //! [share]
@@ -204,7 +206,7 @@ impl Config {
             .map(|a| a.trim().to_owned())
             .filter(|a| !a.is_empty());
         if let Some(a) = &relay {
-            a.parse::<pairly_transport_relay::RelayAddr>()
+            a.parse::<pairly_transport_relay::Relay>()
                 .with_context(|| format!("[relay] address in {}", path.display()))?;
         }
         Ok(Self {
@@ -259,35 +261,22 @@ pub fn file_path(path: Option<&Path>) -> PathBuf {
 /// Set this PC's name in the config file at `path`, keeping everything else (and the comments)
 /// as it is: a top-level `name = …` line is replaced, or one is added at the top.
 pub fn save_name(path: &Path, name: &str) -> Result<()> {
+    edit(path, None, "name", Some(name))
+}
+
+/// Save the relay address (or remove it), keeping the rest of the file as it is.
+pub fn save_relay(path: &Path, address: Option<&str>) -> Result<()> {
+    edit(path, Some("relay"), "address", address)
+}
+
+/// Set (or with `None`, remove) `key` at the top of the file or in `[section]`.
+fn edit(path: &Path, section: Option<&str>, key: &str, value: Option<&str>) -> Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let line = format!("name = {}", toml::Value::String(name.to_owned()));
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    // Top-level keys come before the first [section].
-    let top = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with('['))
-        .unwrap_or(lines.len());
-    let existing = lines[..top].iter().position(|l| {
-        l.trim_start()
-            .strip_prefix("name")
-            .is_some_and(|rest| rest.trim_start().starts_with('='))
-    });
-    match existing {
-        Some(i) => lines[i] = line,
-        None => {
-            // After the leading comments, so the file's header stays first.
-            let at = lines[..top]
-                .iter()
-                .position(|l| !l.trim_start().starts_with('#'))
-                .unwrap_or(top);
-            lines.insert(at, line);
-        }
-    }
-    let mut out = lines.join("\n");
+    let mut out = edited(&text, section, key, value).join("\n");
     out.push('\n');
     // Check it still reads before replacing the file.
     toml::from_str::<File>(&out).context("the new config doesn't parse")?;
@@ -298,6 +287,64 @@ pub fn save_name(path: &Path, name: &str) -> Result<()> {
     std::fs::write(&tmp, out).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
+}
+
+fn edited(text: &str, section: Option<&str>, key: &str, value: Option<&str>) -> Vec<String> {
+    let line = value.map(|v| format!("{key} = {}", toml::Value::String(v.to_owned())));
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let is_header = |l: &str| l.trim_start().starts_with('[');
+    // The lines of the wanted table: the top (before the first header) or `[section]`.
+    let (begin, header) = match section {
+        None => (0, None),
+        Some(name) => {
+            let header = format!("[{name}]");
+            match lines.iter().position(|l| l.trim() == header) {
+                Some(i) => (i + 1, Some(i)),
+                None => {
+                    let Some(line) = line else { return lines };
+                    if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                        lines.push(String::new());
+                    }
+                    lines.push(header);
+                    lines.push(line);
+                    return lines;
+                }
+            }
+        }
+    };
+    let end = lines[begin..]
+        .iter()
+        .position(|l| is_header(l))
+        .map_or(lines.len(), |i| begin + i);
+    let existing = lines[begin..end].iter().position(|l| {
+        l.trim_start()
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    });
+    match (existing, line) {
+        (Some(i), Some(line)) => lines[begin + i] = line,
+        (Some(i), None) => {
+            lines.remove(begin + i);
+        }
+        (None, Some(line)) => {
+            // After the table's leading comments (at the top: the file's header stays first).
+            let at = if header.is_some() {
+                // After the section's last line, before the blank line that ends it.
+                lines[begin..end]
+                    .iter()
+                    .rposition(|l| !l.trim().is_empty())
+                    .map_or(begin, |i| begin + i + 1)
+            } else {
+                lines[..end]
+                    .iter()
+                    .position(|l| !l.trim_start().starts_with('#'))
+                    .unwrap_or(end)
+            };
+            lines.insert(at, line);
+        }
+        (None, None) => {}
+    }
+    lines
 }
 
 fn default_path() -> PathBuf {
@@ -396,6 +443,24 @@ mod tests {
         let file = read(&path);
         assert_eq!(file.name.as_deref(), Some("Third"));
         assert_eq!(file.lan.port, Some(1));
+    }
+
+    #[test]
+    fn the_relay_address_is_saved_in_its_section() {
+        let text = "name = \"Desk\"\n\n[relay]\npadding = true\n\n[screen]\nshare_with_phones = true\n";
+        let set = edited(text, Some("relay"), "address", Some("wss://t@r.example.com")).join("\n");
+        assert!(set.contains("[relay]\npadding = true\naddress = \"wss://t@r.example.com\"\n\n[screen]"), "{set}");
+        let changed = edited(&set, Some("relay"), "address", Some("wss://u@r.example.com")).join("\n");
+        assert!(changed.contains("address = \"wss://u@r.example.com\"") && !changed.contains("wss://t@"));
+        let removed = edited(&changed, Some("relay"), "address", None).join("\n");
+        assert!(!removed.contains("address"), "{removed}");
+        assert!(removed.contains("share_with_phones = true"));
+
+        // No [relay] yet: added at the end.
+        let added = edited("name = \"Desk\"", Some("relay"), "address", Some("wss://t@h")).join("\n");
+        assert_eq!(added, "name = \"Desk\"\n\n[relay]\naddress = \"wss://t@h\"");
+        assert_eq!(edited("name = \"Desk\"", Some("relay"), "address", None), ["name = \"Desk\""]);
+        assert!(toml::from_str::<File>(&added).is_ok());
     }
 
     #[test]

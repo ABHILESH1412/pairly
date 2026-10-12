@@ -82,8 +82,23 @@ pub struct SessionConfig {
     pub keepalive_interval: Duration,
     /// Declare the channel dead after this long without inbound traffic.
     pub keepalive_timeout: Duration,
+    /// The same over a relay, where every keepalive wakes the phone's radio and the relay
+    /// itself: rarer, and only when nothing else arrived meanwhile. The relay connection keeps
+    /// itself alive (and notices when it dies) on its own.
+    pub relay_keepalive_interval: Duration,
+    pub relay_keepalive_timeout: Duration,
     /// Number of recent packet ids remembered for duplicate detection.
     pub dedup_window: usize,
+}
+
+impl SessionConfig {
+    /// (interval, timeout) for keepalives over `transport`.
+    fn keepalive(&self, transport: TransportKind) -> (Duration, Duration) {
+        match transport {
+            TransportKind::Relay => (self.relay_keepalive_interval, self.relay_keepalive_timeout),
+            _ => (self.keepalive_interval, self.keepalive_timeout),
+        }
+    }
 }
 
 impl Default for SessionConfig {
@@ -93,6 +108,8 @@ impl Default for SessionConfig {
             ack_batch: 32,
             keepalive_interval: Duration::from_secs(15),
             keepalive_timeout: Duration::from_secs(45),
+            relay_keepalive_interval: Duration::from_secs(5 * 60),
+            relay_keepalive_timeout: Duration::from_secs(12 * 60),
             dedup_window: 4096,
         }
     }
@@ -154,6 +171,7 @@ struct Link {
     transport: TransportKind,
     locally_initiated: bool,
     last_rx: Instant,
+    keepalive_timeout: Duration,
     rtt: Option<Duration>,
     reader: AbortHandle,
     writer: AbortHandle,
@@ -320,11 +338,13 @@ impl Session {
         let reader =
             tokio::spawn(reader_loop(self.shared.clone(), reader, generation)).abort_handle();
         let writer =
-            tokio::spawn(writer_loop(self.shared.clone(), writer, generation)).abort_handle();
+            tokio::spawn(writer_loop(self.shared.clone(), writer, generation, transport))
+                .abort_handle();
         st.link = Some(Link {
             transport,
             locally_initiated: initiator,
             last_rx: Instant::now(),
+            keepalive_timeout: self.shared.config.keepalive(transport).1,
             rtt: None,
             reader,
             writer,
@@ -506,8 +526,15 @@ fn on_inbound(shared: &Shared, env: Envelope, generation: u64) -> Option<Envelop
     }
 }
 
-async fn writer_loop(shared: Arc<Shared>, mut writer: ChannelWriter, generation: u64) {
-    let interval = shared.config.keepalive_interval;
+async fn writer_loop(
+    shared: Arc<Shared>,
+    mut writer: ChannelWriter,
+    generation: u64,
+    transport: TransportKind,
+) {
+    let (interval, _) = shared.config.keepalive(transport);
+    // Over a relay, traffic that arrived recently already proves the link works.
+    let only_when_quiet = transport == TransportKind::Relay;
     let mut keepalive = tokio::time::interval_at(Instant::now() + interval, interval);
     keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let reason = loop {
@@ -534,13 +561,16 @@ async fn writer_loop(shared: Arc<Shared>, mut writer: ChannelWriter, generation:
                     _ = keepalive.tick() => {
                         let t = shared.now_ms();
                         let mut st = shared.lock();
-                        if let Some(env) = st.control(&Keepalive { t }) {
+                        let quiet = st.link.as_ref().is_none_or(|l| l.last_rx.elapsed() >= interval);
+                        if (quiet || !only_when_quiet)
+                            && let Some(env) = st.control(&Keepalive { t })
+                        {
                             st.queues[Priority::Control as usize].push_back(env);
                         }
                     }
                     () = tokio::time::sleep_until(rx_deadline) => {
                         let expired = shared.lock().link.as_ref()
-                            .is_some_and(|l| l.last_rx + shared.config.keepalive_timeout <= Instant::now());
+                            .is_some_and(|l| l.last_rx + l.keepalive_timeout <= Instant::now());
                         if expired {
                             break "keepalive timeout".to_owned();
                         }
@@ -577,10 +607,13 @@ fn next_outbound(shared: &Shared, generation: u64) -> Next {
             return Next::Send(env);
         }
     }
-    let last_rx = st.link.as_ref().map_or(now, |l| l.last_rx);
+    let (last_rx, timeout) = st.link.as_ref().map_or(
+        (now, shared.config.keepalive_timeout),
+        |l| (l.last_rx, l.keepalive_timeout),
+    );
     Next::Wait {
         ack_deadline: st.ack_deadline,
-        rx_deadline: last_rx + shared.config.keepalive_timeout,
+        rx_deadline: last_rx + timeout,
     }
 }
 
@@ -891,5 +924,25 @@ mod tests {
             other => panic!("expected disconnect, got {other:?}"),
         }
         assert!(!p.a.is_connected());
+    }
+
+    #[tokio::test]
+    async fn relay_links_keep_alive_on_their_own_schedule() {
+        // LAN timing that would drop a silent channel at once; relay timing that never would.
+        let config = SessionConfig {
+            keepalive_interval: Duration::from_millis(20),
+            keepalive_timeout: Duration::from_millis(150),
+            relay_keepalive_interval: Duration::from_secs(3600),
+            relay_keepalive_timeout: Duration::from_secs(3600),
+            ..Default::default()
+        };
+        let mut p = Pair::new(config);
+        let (mut ca, _cb_silent) = channel_pair(&p.ka, &p.kb).await;
+        ca.transport = TransportKind::Relay;
+        p.a.attach(ca, identity(2)).await;
+        let _ = next(&mut p.a_events).await; // Connected
+        assert_quiet(&mut p.a_events).await;
+        assert!(p.a.is_connected(), "a quiet relay link isn't dropped early");
+        assert!(p.a.rtt().is_none(), "no keepalive sent within the relay interval");
     }
 }

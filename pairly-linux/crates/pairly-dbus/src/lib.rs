@@ -178,6 +178,11 @@ pub trait Daemon {
     fn set_name(&self, name: &str) -> zbus::Result<()>;
     /// Stop the daemon (every device disconnects).
     fn quit(&self) -> zbus::Result<()>;
+    /// The relay address this PC uses, or empty for none.
+    fn relay(&self) -> zbus::Result<String>;
+    /// Use a relay (`wss://…` or `pairly-relay://…`), or none with an empty address. The
+    /// daemon restarts to use it.
+    fn set_relay(&self, address: &str) -> zbus::Result<()>;
     /// (this version, state, detail, automatic): see the daemon's `UpdateStatus`.
     fn update_status(&self) -> zbus::Result<(String, String, String, bool)>;
     fn check_for_updates(&self) -> zbus::Result<()>;

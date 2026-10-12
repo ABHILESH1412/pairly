@@ -21,8 +21,9 @@ Bluetooth or your own relay.
 It works:
 - **on the same network**, over Wi-Fi with automatic discovery;
 - **over Bluetooth**, when there is no shared network;
-- **anywhere**, through a small relay server you host yourself (see the
-  [relay guide](pairly-core/crates/pairly-relay/README.md)).
+- **anywhere**, through your own relay: a free Cloudflare Worker you set up in five minutes
+  ([guide](pairly-relay-worker/README.md)), or a small server you host yourself
+  ([guide](pairly-core/crates/pairly-relay/README.md)).
 
 It always uses the best link available and switches without dropping anything.
 
@@ -86,7 +87,8 @@ The details, including what a paired device is trusted to do, are in
 | Linux app and daemon | `pairly-linux` | `make install-user` (installs under `~/.local` and starts the service) |
 | Windows app | `pairly-windows` | `cargo run` in `src-tauri` (needs the Visual Studio C++ build tools) |
 | Android app | `pairly-android` | `./gradlew installDebug` (needs the Android SDK and NDK, and `cargo-ndk`) |
-| Relay | `pairly-core` | `cargo build --release -p pairly-relay` |
+| Relay (Cloudflare) | `pairly-relay-worker` | `npx wrangler deploy` |
+| Relay (own server) | `pairly-core` | `cargo build --release -p pairly-relay` |
 
 The details are in each folder's README. [plan.md](plan.md) is the design and build log.
 [docs/releasing.md](docs/releasing.md) describes how releases are made.

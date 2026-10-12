@@ -12,8 +12,10 @@ pub struct DaemonIface {
     pub data_dir: std::path::PathBuf,
     pub cache_dir: std::path::PathBuf,
     pub notification_apps: std::sync::Arc<crate::notification_apps::AppFilter>,
-    /// The config file, where a new name is saved.
+    /// The config file, where a new name or relay is saved.
     pub config_path: std::path::PathBuf,
+    /// The relay this PC uses, from the config file.
+    pub relay: Option<String>,
     /// Restart the daemon (to take a new name).
     pub restart: std::sync::Arc<tokio::sync::Notify>,
     /// Stop the daemon (Pairly turned off).
@@ -109,6 +111,30 @@ impl DaemonIface {
         }
         crate::config::save_name(&self.config_path, name).map_err(|e| failed(format!("{e:#}")))?;
         tracing::info!(name, "renamed: restarting");
+        self.restart.notify_one();
+        Ok(())
+    }
+
+    /// The relay address this PC uses, or empty for none.
+    async fn relay(&self) -> String {
+        self.relay.clone().unwrap_or_default()
+    }
+
+    /// Use a relay (`wss://…` or `pairly-relay://…`), or none with an empty address. Saved in
+    /// the config file; the daemon restarts to use it, and paired phones learn it from this PC.
+    async fn set_relay(&self, address: &str) -> fdo::Result<()> {
+        let address = address.trim();
+        if !address.is_empty() {
+            address
+                .parse::<pairly_transport_relay::Relay>()
+                .map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        }
+        if address == self.relay.as_deref().unwrap_or_default() {
+            return Ok(());
+        }
+        crate::config::save_relay(&self.config_path, (!address.is_empty()).then_some(address))
+            .map_err(|e| failed(format!("{e:#}")))?;
+        tracing::info!(relay = !address.is_empty(), "relay changed: restarting");
         self.restart.notify_one();
         Ok(())
     }

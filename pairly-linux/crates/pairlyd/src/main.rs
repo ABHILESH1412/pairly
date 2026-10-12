@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
     node_config.relay_padding = config.relay_padding;
     match &config.relay {
         Some(relay) => {
-            info!(relay = ?relay.parse::<pairly_transport_relay::RelayAddr>().ok(), "using a relay")
+            info!(relay = ?relay.parse::<pairly_transport_relay::Relay>().ok(), "using a relay")
         }
         None => info!("no relay configured: devices are reachable on the local network only"),
     }
@@ -242,6 +242,7 @@ async fn main() -> Result<()> {
                 cache_dir: cache_dir.clone(),
                 notification_apps: notification_apps.clone(),
                 config_path: config::file_path(args.config.as_deref()),
+                relay: config.relay.clone(),
                 restart: restart.clone(),
                 quit: quit.clone(),
                 updater: updater.clone(),
@@ -318,10 +319,16 @@ async fn main() -> Result<()> {
         () = restart.notified() => {
             // Let the D-Bus reply go out first.
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            forward.abort();
-            node.shutdown().await;
-            drop(conn);
-            return Err(restart_self());
+            if restart_with_systemd(&conn).await {
+                // systemd stops this copy (SIGTERM, a normal shutdown below) and starts the new.
+                info!("restarting through systemd");
+                let _ = term.recv().await;
+            } else {
+                forward.abort();
+                node.shutdown().await;
+                drop(conn);
+                return Err(restart_self());
+            }
         }
     }
     info!("shutting down");
@@ -330,8 +337,46 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Start this program again in place (same process id, so systemd keeps tracking it), to
-/// take a changed config. Returns only if that failed.
+/// Under systemd, ask it to restart this service. Restarting in place instead would release
+/// the bus name for a moment, and systemd takes that as a D-Bus service (`Type=dbus`) ending:
+/// it would stop the daemon for good.
+async fn restart_with_systemd(conn: &Connection) -> bool {
+    // Set by systemd for the services it starts.
+    if std::env::var_os("INVOCATION_ID").is_none() {
+        return false;
+    }
+    const SYSTEMD: &str = "org.freedesktop.systemd1";
+    let unit = conn
+        .call_method(
+            Some(SYSTEMD),
+            "/org/freedesktop/systemd1",
+            Some("org.freedesktop.systemd1.Manager"),
+            "GetUnitByPID",
+            &std::process::id(),
+        )
+        .await
+        .and_then(|reply| reply.body().deserialize::<zbus::zvariant::OwnedObjectPath>());
+    let restarted = match unit {
+        Ok(unit) => conn
+            .call_method(
+                Some(SYSTEMD),
+                unit.as_str(),
+                Some("org.freedesktop.systemd1.Unit"),
+                "Restart",
+                &("replace",),
+            )
+            .await
+            .map(drop),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = &restarted {
+        warn!(error = %e, "systemd didn't restart the service: restarting in place");
+    }
+    restarted.is_ok()
+}
+
+/// Start this program again in place (same process id), to take a changed config. Returns only
+/// if that failed.
 fn restart_self() -> anyhow::Error {
     use std::os::unix::process::CommandExt;
     let mut args = std::env::args_os();

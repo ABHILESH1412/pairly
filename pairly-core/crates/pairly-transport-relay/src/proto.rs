@@ -109,7 +109,7 @@ pub fn encode_pin(pin: &[u8; 32]) -> String {
     BASE32_NOPAD.encode(pin).to_ascii_lowercase()
 }
 
-fn valid_token(t: &str) -> bool {
+pub(crate) fn valid_token(t: &str) -> bool {
     !t.is_empty()
         && t.len() <= MAX_TOKEN_LEN
         && t.bytes()

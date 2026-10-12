@@ -1,4 +1,5 @@
-//! Internet transport through a blind `pairly-relay` (see [`proto`]).
+//! Internet transport through a blind relay: `pairly-relay` over QUIC (see [`proto`]), or its
+//! WebSocket twin `pairly-relay-worker` (see [`ws`]).
 //!
 //! For every paired device the node reports (with the relays it should be met on), this keeps a
 //! listener in the device's room. The relay says when the device is there too, which becomes a
@@ -8,11 +9,14 @@
 
 pub mod proto;
 pub mod tls;
+pub mod ws;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -29,12 +33,55 @@ use tracing::{debug, info, warn};
 
 pub use proto::{BadRelayAddr, RelayAddr};
 use proto::{Join, Role, Room};
+pub use ws::WsRelayAddr;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a dial waits for the relay to pair it.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// A relay address: `pairly-relay://…` (a self-hosted `pairly-relay`, over QUIC) or `wss://…`
+/// (a `pairly-relay-worker`, over WebSockets).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Relay {
+    Quic(RelayAddr),
+    WebSocket(WsRelayAddr),
+}
+
+impl FromStr for Relay {
+    type Err = BadRelayAddr;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.starts_with("wss://") || s.starts_with("ws://") {
+            s.parse().map(Self::WebSocket)
+        } else if s.starts_with("pairly-relay://") {
+            s.parse().map(Self::Quic)
+        } else {
+            Err(BadRelayAddr("must start with wss:// or pairly-relay://"))
+        }
+    }
+}
+
+impl fmt::Display for Relay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Quic(a) => a.fmt(f),
+            Self::WebSocket(a) => a.fmt(f),
+        }
+    }
+}
+
+/// Never print the token.
+impl fmt::Debug for Relay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Quic(a) => fmt::Debug::fmt(a, f),
+            Self::WebSocket(a) => fmt::Debug::fmt(a, f),
+        }
+    }
+}
 
 fn err(e: impl std::fmt::Display) -> CoreError {
     CoreError::Transport(e.to_string())
@@ -50,16 +97,32 @@ pub struct RelayConfig {
 /// Rooms to listen in on one relay, and which device each belongs to.
 type Rooms = HashMap<Room, DeviceId>;
 
-struct RelayHandle {
+struct QuicHandle {
     rooms: watch::Sender<Rooms>,
     conn: watch::Receiver<Option<quinn::Connection>>,
     addr: RelayAddr,
+}
+
+enum RelayHandle {
+    Quic(QuicHandle),
+    WebSocket(ws::Handle),
+}
+
+impl RelayHandle {
+    fn rooms(&self) -> &watch::Sender<Rooms> {
+        match self {
+            Self::Quic(h) => &h.rooms,
+            Self::WebSocket(h) => &h.rooms,
+        }
+    }
 }
 
 struct Running {
     endpoint: quinn::Endpoint,
     events: mpsc::Sender<TransportEvent>,
     relays: HashMap<String, RelayHandle>,
+    /// This device: its member id in each room on a WebSocket relay derives from it.
+    me: DeviceId,
 }
 
 pub struct RelayTransport {
@@ -120,7 +183,7 @@ impl Transport for RelayTransport {
 
     async fn start(
         &self,
-        _advert: Advertisement,
+        advert: Advertisement,
         events: mpsc::Sender<TransportEvent>,
     ) -> Result<()> {
         let socket = bind()?;
@@ -134,13 +197,14 @@ impl Transport for RelayTransport {
             endpoint,
             events,
             relays: HashMap::new(),
+            me: advert.device_id,
         });
         Ok(())
     }
 
     fn peers_changed(&self, peers: &[PairedPeer]) {
         // relay address -> rooms we want to be in there
-        let mut wanted: HashMap<String, (RelayAddr, Rooms)> = HashMap::new();
+        let mut wanted: HashMap<String, (Relay, Rooms)> = HashMap::new();
         for peer in peers {
             let direct = peer
                 .link
@@ -149,7 +213,7 @@ impl Transport for RelayTransport {
                 continue;
             }
             for relay in &peer.relays {
-                match relay.parse::<RelayAddr>() {
+                match relay.parse::<Relay>() {
                     Ok(addr) => {
                         wanted
                             .entry(addr.to_string())
@@ -169,13 +233,22 @@ impl Transport for RelayTransport {
         running.relays.retain(|key, _| wanted.contains_key(key));
         for (key, (addr, rooms)) in wanted {
             if let Some(handle) = running.relays.get(&key) {
-                handle.rooms.send_if_modified(|current| {
+                handle.rooms().send_if_modified(|current| {
                     let changed = *current != rooms;
                     *current = rooms;
                     changed
                 });
                 continue;
             }
+            let addr = match addr {
+                Relay::Quic(addr) => addr,
+                Relay::WebSocket(addr) => {
+                    let handle =
+                        ws::start(addr, key.clone(), running.me, rooms, running.events.clone());
+                    running.relays.insert(key, RelayHandle::WebSocket(handle));
+                    continue;
+                }
+            };
             let client = match tls::client_config(addr.pin) {
                 Ok(c) => c,
                 Err(e) => {
@@ -196,11 +269,11 @@ impl Transport for RelayTransport {
             ));
             running.relays.insert(
                 key,
-                RelayHandle {
+                RelayHandle::Quic(QuicHandle {
                     rooms: rooms_tx,
                     conn: conn_rx,
                     addr,
-                },
+                }),
             );
         }
     }
@@ -208,17 +281,34 @@ impl Transport for RelayTransport {
     async fn connect(&self, candidate: &PeerCandidate) -> Result<BoxDuplex> {
         let (room, relay) = parse_candidate(&candidate.address)
             .ok_or_else(|| err(format!("bad relay candidate {:?}", candidate.address)))?;
-        let (conn, token) = {
+        enum Via {
+            Quic(quinn::Connection, Option<String>),
+            WebSocket(Arc<WsRelayAddr>, String),
+        }
+        let via = {
             let guard = self.lock();
-            let handle = guard
-                .as_ref()
-                .and_then(|r| r.relays.get(relay))
-                .ok_or_else(|| err("not using that relay"))?;
-            let conn = handle.conn.borrow().clone();
-            (
-                conn.ok_or_else(|| err("relay not connected"))?,
-                handle.addr.token.clone(),
-            )
+            let running = guard.as_ref().ok_or_else(|| err("not running"))?;
+            match running.relays.get(relay) {
+                Some(RelayHandle::Quic(handle)) => {
+                    let conn = handle.conn.borrow().clone();
+                    Via::Quic(
+                        conn.ok_or_else(|| err("relay not connected"))?,
+                        handle.addr.token.clone(),
+                    )
+                }
+                Some(RelayHandle::WebSocket(handle)) => {
+                    Via::WebSocket(handle.addr.clone(), ws::member(&room, &running.me))
+                }
+                None => return Err(err("not using that relay")),
+            }
+        };
+        let (conn, token) = match via {
+            Via::Quic(conn, token) => (conn, token),
+            Via::WebSocket(addr, member) => {
+                return tokio::time::timeout(ws::DIAL_TIMEOUT, ws::dial(&addr, &room, &member))
+                    .await
+                    .map_err(|_| CoreError::Timeout)?;
+            }
         };
         let dial = async {
             let (mut send, mut recv) = conn.open_bi().await.map_err(err)?;

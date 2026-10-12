@@ -14,10 +14,17 @@ workspace = true
 pairly-core.workspace = true
 async-trait.workspace = true
 data-encoding.workspace = true
+futures.workspace = true
 quinn.workspace = true
 rcgen.workspace = true
 ring.workspace = true
 rustls.workspace = true
 socket2.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
+webpki-roots.workspace = true
+
+[dev-dependencies]
+pairly-crypto.workspace = true
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }

@@ -355,8 +355,8 @@ function settingsPage() {
     </div></div>
     <div class="group"><h2>Connections</h2><div class="card">
       <div class="row"><div class="grow"><b>Relay</b>
-        <div class="sub">Reach your devices over the internet through your own relay (the address <code>pairly-relay</code> prints). Paired phones learn it from this PC.</div>
-        <input class="field" id="relay-field" value="${esc(s.relay ?? "")}" placeholder="pairly-relay://…" spellcheck="false">
+        <div class="sub">Reach your devices over the internet through your own relay: the <code>wss://…</code> address of your Cloudflare relay, or the <code>pairly-relay://…</code> one your server prints. Paired phones learn it from this PC.</div>
+        <input class="field" id="relay-field" value="${esc(s.relay ?? "")}" placeholder="wss://…" spellcheck="false">
         ${state.relay_error ? `<div class="sub bad-text">${esc(state.relay_error)}</div>` : ""}</div>
         <button class="btn" id="save-relay">Save</button></div>
       ${row("Hide message sizes from the relay", "Pads what goes through it to 256-byte steps", sw("relay_padding", s.relay_padding, !!s.relay))}

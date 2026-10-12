@@ -351,7 +351,7 @@ impl Backend {
             .map(str::trim)
             .filter(|r| !r.is_empty())
         {
-            match relay.parse::<pairly_transport_relay::RelayAddr>() {
+            match relay.parse::<pairly_transport_relay::Relay>() {
                 Ok(_) => config.relay = Some(relay.to_owned()),
                 Err(e) => {
                     tracing::warn!(error = %e, "the relay address isn't valid");
@@ -513,7 +513,7 @@ impl Backend {
         let address = address.trim();
         if !address.is_empty() {
             address
-                .parse::<pairly_transport_relay::RelayAddr>()
+                .parse::<pairly_transport_relay::Relay>()
                 .map_err(|e| anyhow::anyhow!("that isn't a relay address: {e}"))?;
         }
         self.change_settings(|s| {

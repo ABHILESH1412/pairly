@@ -279,6 +279,7 @@ pub fn open(
     }
     page.add(&this_pc);
 
+    page.add(&relay_group(&dialog, daemon.clone()));
     page.add(&updates_group(daemon.clone()));
 
     // About.
@@ -344,6 +345,56 @@ fn update_text(current: &str, state: &str, detail: &str) -> String {
         "failed" => format!("Couldn't update: {detail}"),
         _ => format!("Pairly {current}"),
     }
+}
+
+/// The relay: how devices reach each other away from home.
+fn relay_group(
+    dialog: &adw::PreferencesDialog,
+    daemon: Option<DaemonProxy<'static>>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Away from home")
+        .description(
+            "Reach your devices over the internet through your own relay: the wss:// address \
+             of your Cloudflare relay, or the pairly-relay:// one your server prints. Paired \
+             phones learn it from this PC.",
+        )
+        .build();
+    // The address holds the relay's access token: hidden unless asked.
+    let row = adw::PasswordEntryRow::builder()
+        .title("Relay address")
+        .show_apply_button(true)
+        .sensitive(daemon.is_some())
+        .build();
+    if let Some(daemon) = daemon.clone() {
+        let row = row.clone();
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(Ok(address)) = relm4::spawn(async move { daemon.relay().await }).await {
+                row.set_text(&address);
+            }
+        });
+    }
+    row.connect_apply({
+        let dialog = dialog.clone();
+        move |row| {
+            let address = row.text().trim().to_owned();
+            let Some(daemon) = daemon.clone() else { return };
+            let dialog = dialog.clone();
+            gtk::glib::spawn_future_local(async move {
+                let removed = address.is_empty();
+                let result = relm4::spawn(async move { daemon.set_relay(&address).await }).await;
+                let text = match result {
+                    Ok(Ok(())) if removed => "Relay removed".to_owned(),
+                    Ok(Ok(())) => "Relay saved. Reconnecting your devices…".to_owned(),
+                    Ok(Err(e)) => format!("Couldn't use that relay: {}", describe(&e)),
+                    Err(e) => format!("Couldn't use that relay: {e}"),
+                };
+                dialog.add_toast(adw::Toast::new(&text));
+            });
+        }
+    });
+    group.add(&row);
+    group
 }
 
 /// Updates: automatic or not, where they stand, and a button to check (or install) now.

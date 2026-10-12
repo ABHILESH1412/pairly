@@ -1,5 +1,10 @@
 //! A real relay in-process, two nodes that pair on a (simulated) LAN, then lose it, meet on the
 //! relay, and move back to the LAN when it returns: nothing lost or delivered twice.
+//!
+//! The same with the WebSocket relay (`pairly-relay-worker`), run locally with `wrangler dev`:
+//!
+//!   cd pairly-relay-worker && echo TOKEN=test-token > .dev.vars && npx wrangler dev
+//!   PAIRLY_WS_RELAY=ws://test-token@127.0.0.1:8787 cargo test -p pairly-relay -- --ignored
 #![allow(clippy::unwrap_used)] // test helpers
 
 use std::net::SocketAddr;
@@ -172,6 +177,26 @@ fn init_logging() {
 async fn fails_over_to_the_relay_and_back() {
     init_logging();
     let (relay, relay_addr) = start_relay().await;
+    fail_over_and_back(relay_addr).await;
+    assert!(
+        relay
+            .stats()
+            .bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a pairly-relay-worker: PAIRLY_WS_RELAY=ws://TOKEN@127.0.0.1:8787"]
+async fn fails_over_to_the_websocket_relay_and_back() {
+    init_logging();
+    let relay = std::env::var("PAIRLY_WS_RELAY").expect("PAIRLY_WS_RELAY");
+    fail_over_and_back(relay).await;
+}
+
+async fn fail_over_and_back(relay_addr: String) {
     let net = MemoryNetwork::new();
     // Only the PC is configured with the relay; the phone learns it while paired on the LAN.
     let mut pc = start(&net, "pc", Some(relay_addr), false).await;
@@ -190,13 +215,6 @@ async fn fails_over_to_the_relay_and_back() {
     phone.expect_pings(&over_relay).await;
     phone.ping(pc_id, "hello from mobile data");
     pc.expect_pings(&["hello from mobile data".into()]).await;
-    assert!(
-        relay
-            .stats()
-            .bytes
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
-    );
 
     // Back home: the LAN reappears and the session moves to it while messages are in flight.
     let switching: Vec<String> = (0..20).map(|i| format!("switch {i}")).collect();
@@ -211,7 +229,6 @@ async fn fails_over_to_the_relay_and_back() {
 
     pc.node.shutdown().await;
     phone.node.shutdown().await;
-    relay.shutdown().await;
 }
 
 /// Raw protocol: a stream for a room nobody is in, with and without the right token.
