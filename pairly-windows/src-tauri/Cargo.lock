@@ -3368,6 +3368,8 @@ dependencies = [
  "pairly-transport-relay",
  "png 0.17.16",
  "qrcode",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",
