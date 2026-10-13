@@ -1960,6 +1960,7 @@ dependencies = [
  "pairly-dbus",
  "qrcode",
  "relm4",
+ "serde_json",
  "tokio",
  "wayland-client",
  "wayland-protocols-wlr",
