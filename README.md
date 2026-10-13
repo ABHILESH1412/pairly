@@ -131,8 +131,60 @@ Pairly starts with Windows and lives in the tray 🔽.
 
 ### 🐧 Linux
 
-**Arch, EndeavourOS, Manjaro:** download **`PKGBUILD`** and **`pairly.install`** into an empty
-folder, then run:
+Pairly runs on **every Linux distribution** through Flatpak. Pick your system:
+
+| Your Linux | Install with |
+|---|---|
+| 🟠 **Ubuntu**, Pop!_OS, Zorin, elementary | Flatpak ⬇️ |
+| 🔵 **Fedora** | Flatpak ⬇️ |
+| 🔴 **Debian** | Flatpak ⬇️ |
+| 🟢 **Linux Mint** | Flatpak ⬇️ (Flatpak is already set up) |
+| 🦎 **openSUSE** | Flatpak ⬇️ |
+| 🏔️ **Arch**, EndeavourOS, Manjaro | the Arch package, or Flatpak |
+
+#### 📦 Flatpak (any distribution)
+
+**1. Set up Flatpak once** (skip this on Fedora and Linux Mint, which have it already):
+
+```sh
+# Ubuntu, Debian, Pop!_OS, Zorin, elementary
+sudo apt install flatpak gnome-software-plugin-flatpak
+# openSUSE
+sudo zypper install flatpak
+# Arch, EndeavourOS, Manjaro
+sudo pacman -S flatpak
+```
+
+Then add Flathub, where the parts Pairly is built on come from:
+
+```sh
+flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+```
+
+If you installed Flatpak just now, **log out and back in** once, so Pairly shows up in your
+app menu.
+
+**2. Install Pairly:** download **`pairly-X.Y.Z-x86_64.flatpak`** from the
+[Releases page](https://github.com/ABHILESH1412/pairly/releases/latest), then:
+
+```sh
+flatpak install --user ~/Downloads/pairly-*-x86_64.flatpak
+```
+
+(Or double-click the file to open it in your software centre.)
+
+**3. Open Pairly** from your app menu. The first time, your desktop asks whether Pairly may run
+in the background: say yes, so your phone can reach your PC whenever it's on. Pairly then starts
+at login and **updates itself** like the other apps.
+
+> 💡 **On Hyprland or Sway,** these desktops keep a few things away from sandboxed apps, so the
+> Flatpak can't send your clipboard automatically (use **Send Clipboard**), can't draw the 🔴 laser
+> pointer, and asks which screen to share each time. On GNOME and KDE it works the same as a
+> normal install. On Arch with Hyprland or Sway, prefer the Arch package below.
+
+#### 🏔️ Arch, EndeavourOS, Manjaro
+
+Download **`PKGBUILD`** and **`pairly.install`** from the release into an empty folder, then run:
 
 ```sh
 makepkg -si
@@ -141,21 +193,27 @@ systemctl --user enable --now pairlyd
 
 The build takes a few minutes and about 4 GB of RAM.
 
-**Any other recent distribution:** download **`pairly-X.Y.Z-linux-x86_64.tar.gz`**, which is
-already built (it needs GTK 4, libadwaita and glibc 2.44 or newer):
+#### 🧰 Without Flatpak (rolling distributions)
+
+**`pairly-X.Y.Z-linux-x86_64.tar.gz`** is already built and installs for your user only. It needs
+a distribution with GNOME 50's GTK and libadwaita (Arch and other rolling ones, Fedora 44, Ubuntu
+26.04 or newer); everywhere else, use the Flatpak.
 
 ```sh
 tar xzf pairly-*-linux-x86_64.tar.gz
 cd pairly-*-linux-x86_64
-make install activate      # installs for your user under ~/.local (no root)
+make install activate      # installs under ~/.local (no root)
 ```
 
-Then open **Pairly** from your app menu.
+#### 🔥 Firewall
 
-**If your PC has a firewall,** allow Pairly's port (UDP 47100) and device discovery (mDNS):
+If your PC has a firewall, allow Pairly's port (UDP 47100) and device discovery (mDNS):
 
 ```sh
+# Fedora, openSUSE, and others with firewalld
 sudo firewall-cmd --permanent --add-port=47100/udp --add-service=mdns && sudo firewall-cmd --reload
+# Ubuntu, Mint, and others with ufw (only if you turned ufw on)
+sudo ufw allow 47100/udp && sudo ufw allow 5353/udp
 ```
 
 <details>
@@ -237,8 +295,9 @@ they did. You can switch this off in each app's Settings → **Updates**.
 
 - 🔏 **Signed:** updates are only installed if they carry the project's signature. A tampered
   download, or a hijacked GitHub account, can't push anything to your devices.
-- 🐧 **Linux package installs** (`makepkg`, under `/usr`) are left to your package manager:
-  Pairly tells you when there's a new version.
+- 📦 **The Flatpak** updates itself the same way, from the signed `.flatpak` in each release.
+- 🐧 **The Arch package** (`makepkg`, under `/usr`) is left to your package manager: Pairly tells
+  you when there's a new version.
 
 ---
 
@@ -304,6 +363,7 @@ portal or `/dev/uinput` access.
 | Part | Folder | Command |
 |---|---|---|
 | 🐧 Linux app and service | [`pairly-linux`](pairly-linux) | `make install-user` (installs under `~/.local` and starts the service) |
+| 📦 Linux Flatpak | [`pairly-linux/flatpak`](pairly-linux/flatpak) | see its [README](pairly-linux/flatpak/README.md) |
 | 🪟 Windows app | [`pairly-windows`](pairly-windows) | `cargo run` in `src-tauri` (needs the Visual Studio C++ build tools) |
 | 🤖 Android app | [`pairly-android`](pairly-android) | `./gradlew installDebug` (needs the Android SDK and NDK, and `cargo-ndk`) |
 | 🌍 Relay (Cloudflare) | [`pairly-relay-worker`](pairly-relay-worker) | `npx wrangler deploy` |

@@ -1094,9 +1094,13 @@ impl App {
                     Status::Unavailable(reason) => (
                         "dialog-warning-symbolic",
                         "Pairly Isn't Running",
-                        format!(
-                            "Start the background service with “systemctl --user start pairlyd”.\n{reason}"
-                        ),
+                        if std::env::var_os("FLATPAK_ID").is_some() {
+                            format!("Close Pairly and open it again to start it.\n{reason}")
+                        } else {
+                            format!(
+                                "Start the background service with “systemctl --user start pairlyd”.\n{reason}"
+                            )
+                        },
                         false,
                     ),
                     Status::Ready if self.devices.iter().any(|d| d.paired) => {

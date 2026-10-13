@@ -24,7 +24,7 @@ const KEYS: &[&str] = &[
 /// The session's display variables, as systemd knows them now.
 pub fn vars() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    if let Ok(o) = Command::new("systemctl")
+    if let Ok(o) = crate::sandbox::host_command("systemctl")
         .args(["--user", "show-environment"])
         .output()
         && o.status.success()

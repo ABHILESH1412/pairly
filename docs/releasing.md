@@ -92,6 +92,19 @@ New repository secret**, and add:
 - `TAURI_SIGNING_PRIVATE_KEY`: the output of `base64 -w0 ~/pairly-update.key`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the key's password
 
+### Set up the Flatpak build (once)
+
+Each release also builds the Linux Flatpak (for Ubuntu, Fedora and every other distribution).
+Install the builder and the GNOME SDK once, for your user (about 2 GB):
+
+```sh
+flatpak install --user flathub org.flatpak.Builder org.gnome.Platform//50 org.gnome.Sdk//50 \
+  org.freedesktop.Sdk.Extension.rust-stable//25.08
+```
+
+The build keeps its working files in `~/.cache/pairly-flatpak` (a few GB; delete it whenever
+you like, the next release rebuilds it). To release without the Flatpak, add `--no-flatpak`.
+
 ## 4. Release (every time)
 
 Commit your work as usual (`git add`, `git commit`), then run **one command** from the
@@ -112,8 +125,10 @@ It asks for the release key's password, then works through these steps by itself
    - both Rust workspaces and their lock files;
    - the Android `versionName`, and `versionCode` + 1;
    - the PKGBUILD;
-   - the software-centre metadata, with release notes made from your commit messages.
-3. **Runs the tests**, then **builds** the signed APK and the Linux bundle (memory-capped).
+   - the software-centre metadata, with release notes made from your commit messages;
+   - the Flatpak's list of Rust crates (`pairly-linux/flatpak/cargo-sources.json`).
+3. **Runs the tests**, then **builds** the signed APK, the Linux bundle and the Flatpak, and
+   signs the Linux downloads with the update key (it asks for that password too).
 4. **Commits** "Release vX.Y.Z", **tags** it, and **pushes** both.
 5. **Publishes the GitHub release** "Pairly X.Y.Z": what's new (your commit messages since
    the last release), install steps and checksums, with every file attached.
@@ -126,6 +141,7 @@ Useful options:
   everything back. Nothing is built or pushed.
 - `scripts/release.sh --no-test`: skips the test run (faster; use it when you've just run
   the tests yourself).
+- `scripts/release.sh --no-flatpak`: skips the Flatpak (when its builder isn't set up).
 - `scripts/release.sh 0.3.0`: releases an exact version.
 
 **Tip:** the release notes are your commit messages, so write them for people reading the

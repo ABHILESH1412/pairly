@@ -1,0 +1,97 @@
+# Pairly for Linux as a Flatpak: one build for every distribution (Ubuntu, Fedora, Debian,
+# Mint, openSUSE, Arch…), on the GNOME runtime.
+#
+# scripts/release.sh builds it into pairly-X.Y.Z-x86_64.flatpak for each release; README.md in
+# this folder shows how to build and try it by hand. cargo-sources.json lists every Rust crate
+# (Flatpak builds offline); the release script regenerates it from Cargo.lock.
+#
+# The permissions keep every feature working as in a normal install: Pairly's job is to let
+# your phone reach this PC (its notifications, files, input, power and commands).
+
+id: io.github.abhilesh1412.Pairly
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: pairly-gtk
+finish-args:
+  # Devices on the network (found with mDNS) and the internet relay.
+  - --share=network
+  - --share=ipc
+  # Windows, and the laser pointer drawn over the screen.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # The GPU for screen sharing's video, and /dev/uinput for remote input on any desktop.
+  - --device=all
+  # Find my PC rings through the speakers.
+  - --socket=pulseaudio
+  # This PC's battery, for the phone.
+  - --system-talk-name=org.freedesktop.UPower
+  # Bluetooth, when there's no network: BlueZ and its sockets.
+  - --system-talk-name=org.bluez
+  - --allow=bluetooth
+  # The whole session bus: sending this PC's notifications to the phone means watching them
+  # (a D-Bus monitor); the daemon also owns its own name and uses the desktop's notifications,
+  # media players, tray, keyring and portals.
+  - --socket=session-bus
+  # Received files go to Downloads; paired devices may browse a folder the user shares.
+  - --filesystem=home
+  # Locking, restarting and powering off the PC, and the phone's commands, run on the PC
+  # itself (flatpak-spawn --host).
+  - --talk-name=org.freedesktop.Flatpak
+
+modules:
+  # The laser pointer's overlay (wlr-layer-shell); not in the GNOME runtime.
+  - name: gtk4-layer-shell
+    buildsystem: meson
+    config-opts:
+      - -Dexamples=false
+      - -Ddocs=false
+      - -Dtests=false
+      - -Dintrospection=false
+      - -Dvapi=false
+    sources:
+      - type: archive
+        url: https://github.com/wmww/gtk4-layer-shell/archive/refs/tags/v1.3.0.tar.gz
+        sha256: 1ebb01ab14e98afd1727f68f64981c37bd23305b1f131f5667c02b94cf593192
+
+  # wl-copy and wl-paste, for the clipboard on Wayland.
+  - name: wl-clipboard
+    buildsystem: meson
+    config-opts:
+      - -Dzshcompletiondir=no
+      - -Dfishcompletiondir=no
+    sources:
+      - type: archive
+        url: https://github.com/bugaevc/wl-clipboard/archive/refs/tags/v2.3.0.tar.gz
+        sha256: b4dc560973f0cd74e02f817ffa2fd44ba645a4f1ea94b7b9614dacc9f895f402
+
+  - name: pairly
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/pairly/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo --offline build --release --locked --manifest-path pairly-linux/Cargo.toml --workspace -j "${FLATPAK_BUILDER_N_JOBS}"
+      - make -C pairly-linux install PREFIX=/app UNITDIR=/app/lib/systemd/user
+      # No systemd service in a Flatpak: D-Bus starts the daemon directly.
+      - sed -i '/^SystemdService=/d' /app/share/dbus-1/services/io.github.abhilesh1412.Pairly.Daemon.service
+      - rm -rf /app/lib/systemd /app/share/kio /app/share/nemo
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - dist
+          - pairly-android
+          - pairly-windows
+          - pairly-relay-worker
+          - pairly-core/target
+          - pairly-linux/target
+          - pairly-linux/flatpak/.flatpak-builder
+          - pairly-linux/flatpak/build
+          - pairly-linux/flatpak/repo
+      - cargo-sources.json

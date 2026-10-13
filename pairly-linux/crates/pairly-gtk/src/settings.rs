@@ -342,6 +342,9 @@ fn update_text(current: &str, state: &str, detail: &str) -> String {
         "available" => format!("Pairly {detail} is available"),
         "installing" => format!("Installing Pairly {detail}…"),
         "installed" => format!("Updated to {detail}: reopen Pairly to use it"),
+        "managed" if std::env::var_os("FLATPAK_ID").is_some() => {
+            format!("Pairly {detail} is available: update it from your software centre")
+        }
         "managed" => format!("Pairly {detail} is available: update it with your package manager"),
         "failed" => format!("Couldn't update: {detail}"),
         _ => format!("Pairly {current}"),

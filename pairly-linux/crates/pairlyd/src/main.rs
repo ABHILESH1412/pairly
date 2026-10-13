@@ -18,6 +18,7 @@ mod notification_apps;
 mod notifications;
 mod platform;
 mod power;
+mod sandbox;
 mod screen;
 mod share;
 mod sms;
@@ -260,6 +261,8 @@ async fn main() -> Result<()> {
         })?;
     info!(id = %node.device_id(), "ready");
     updater.set_conn(conn.clone());
+    // As a Flatpak there's no systemd service: the desktop starts the daemon at login.
+    sandbox::autostart(&conn, true).await;
     tokio::spawn(updater.clone().run());
 
     let tray = if config.tray {
@@ -316,10 +319,20 @@ async fn main() -> Result<()> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
-        () = quit.notified() => info!("quitting (tray or app)"),
+        () = quit.notified() => {
+            info!("quitting (tray or app)");
+            // Turned off: don't come back at the next login either.
+            sandbox::autostart(&conn, false).await;
+        }
         () = restart.notified() => {
             // Let the D-Bus reply go out first.
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            if sandbox::flatpak() && sandbox::relaunch() {
+                info!("restarting in a new sandbox");
+                forward.abort();
+                node.shutdown().await;
+                return Ok(());
+            }
             if restart_with_systemd(&conn).await {
                 // systemd stops this copy (SIGTERM, a normal shutdown below) and starts the new.
                 info!("restarting through systemd");

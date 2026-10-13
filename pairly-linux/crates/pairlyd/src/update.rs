@@ -140,6 +140,37 @@ fn asset_url(version: &str, name: &str) -> String {
     format!("https://github.com/{REPO}/releases/download/v{version}/{name}")
 }
 
+/// How this copy is installed, and so how it updates.
+enum Target {
+    /// Under the user's home (`make install`, the Linux bundle): replaced in place.
+    Prefix(PathBuf),
+    /// A Flatpak installed from a release's `.flatpak` file: reinstalled through Flatpak, per
+    /// user or for the whole system as it was installed.
+    Flatpak { user: bool },
+}
+
+/// `None` when something else updates this copy: a distribution package, or Flathub.
+fn target() -> Option<Target> {
+    if crate::sandbox::flatpak() {
+        let id = std::env::var("FLATPAK_ID").ok()?;
+        let origin = crate::sandbox::host_command("flatpak")
+            .args(["info", "--show-origin", &id])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())?;
+        // Installed from Flathub (or another repository): it updates from there.
+        if origin == "flathub" || !origin.ends_with("-origin") {
+            return None;
+        }
+        let system = std::fs::read_to_string("/.flatpak-info").is_ok_and(|info| {
+            info.lines()
+                .any(|l| l.starts_with("app-path=") && l.contains("/var/lib/flatpak/"))
+        });
+        return Some(Target::Flatpak { user: !system });
+    }
+    user_prefix().map(Target::Prefix)
+}
+
 /// The install prefix of this copy (`~/.local` for `~/.local/bin/pairlyd`), if the user owns it.
 fn user_prefix() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -252,11 +283,15 @@ impl Updater {
             return self.set_status(Status::UpToDate).await;
         }
         info!(latest, current = VERSION, "an update is available");
-        if user_prefix().is_none() {
+        if target().is_none() {
             self.set_status(Status::Managed(latest.clone())).await;
             self.notify(
                 format!("Pairly {latest} is available"),
-                "Update it with your package manager.",
+                if crate::sandbox::flatpak() {
+                    "Update it from your software centre (or flatpak update)."
+                } else {
+                    "Update it with your package manager."
+                },
             );
             return;
         }
@@ -274,16 +309,19 @@ impl Updater {
 
     async fn install(self: &Arc<Self>, version: &str) {
         let _busy = self.busy.lock().await;
-        let Some(prefix) = user_prefix() else { return };
-        let bundle = format!("pairly-{version}-linux-x86_64");
-        let archive = asset_url(version, &format!("{bundle}.tar.gz"));
-        let signature = asset_url(version, &format!("{bundle}.tar.gz.minisig"));
+        let Some(target) = target() else { return };
         self.set_status(Status::Installing(version.to_owned()))
             .await;
         let dir = self.downloads.clone();
-        let bundle_name = bundle.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            install_bundle(&dir, &bundle_name, &archive, &signature, &prefix)
+        let version_owned = version.to_owned();
+        let result = tokio::task::spawn_blocking(move || match target {
+            Target::Prefix(prefix) => {
+                let bundle = format!("pairly-{version_owned}-linux-x86_64");
+                let archive = asset_url(&version_owned, &format!("{bundle}.tar.gz"));
+                let signature = asset_url(&version_owned, &format!("{bundle}.tar.gz.minisig"));
+                install_bundle(&dir, &bundle, &archive, &signature, &prefix)
+            }
+            Target::Flatpak { user } => install_flatpak(&dir, &version_owned, user),
         })
         .await
         .map_err(|e| e.to_string())
@@ -362,6 +400,42 @@ fn install_bundle(
     }
     let _ = std::fs::remove_dir_all(dir);
     Ok(())
+}
+
+/// Download and verify a release's `.flatpak` file, then install it with the PC's Flatpak.
+fn install_flatpak(dir: &Path, version: &str, user: bool) -> Result<(), String> {
+    let name = format!("pairly-{version}-x86_64.flatpak");
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let signature = curl(&[&asset_url(version, &format!("{name}.minisig"))]).map_err(|e| {
+        if e.contains("error: 404") {
+            "the release has no signed Flatpak".to_owned()
+        } else {
+            e
+        }
+    })?;
+    let signature = String::from_utf8(signature).map_err(|e| e.to_string())?;
+    let bundle = curl(&[&asset_url(version, &name)])?;
+    verify(&bundle, &signature, PUBLIC_KEY)?;
+    // In the app's own folder under ~/.var, which the PC's Flatpak can read.
+    let file = dir.join(&name);
+    std::fs::write(&file, &bundle).map_err(|e| e.to_string())?;
+    let out = crate::sandbox::host_command("flatpak")
+        .arg("install")
+        .arg(if user { "--user" } else { "--system" })
+        .args(["--noninteractive", "--reinstall", "-y", "--bundle"])
+        .arg(&file)
+        .output()
+        .map_err(|e| format!("can't run flatpak: {e}"))?;
+    let _ = std::fs::remove_dir_all(dir);
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "flatpak couldn't install it: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
 }
 
 #[cfg(test)]

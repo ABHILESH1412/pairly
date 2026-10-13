@@ -35,14 +35,14 @@ impl PowerHost for LinuxPower {
 /// Lock the user's graphical session. Our service runs outside any session, so name it.
 fn lock() -> Result<(), String> {
     let uid = own_uid();
-    let display = Command::new("loginctl")
+    let display = crate::sandbox::host_command("loginctl")
         .args(["show-user", &uid, "-p", "Display", "--value"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|s| !s.is_empty());
-    let mut cmd = Command::new("loginctl");
+    let mut cmd = crate::sandbox::host_command("loginctl");
     cmd.arg("lock-session");
     if let Some(session) = &display {
         cmd.arg(session);
@@ -54,7 +54,7 @@ fn lock() -> Result<(), String> {
 fn later(args: &'static [&'static str]) -> Result<(), String> {
     std::thread::spawn(move || {
         std::thread::sleep(SHUTDOWN_DELAY);
-        if let Err(e) = run(Command::new("systemctl").args(args)) {
+        if let Err(e) = run(crate::sandbox::host_command("systemctl").args(args)) {
             warn!(error = %e, ?args, "power action failed");
         }
     });

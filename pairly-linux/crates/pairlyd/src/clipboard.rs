@@ -90,7 +90,7 @@ pub async fn watch(plugin: Arc<ClipboardPlugin>) {
         let child = tokio::process::Command::from(cmd)
             .args(["--watch", "echo"])
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn();
         let mut child = match child {
@@ -109,7 +109,21 @@ pub async fn watch(plugin: Arc<ClipboardPlugin>) {
                 }
             }
         }
+        let mut error = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            use tokio::io::AsyncReadExt;
+            let _ = stderr.read_to_string(&mut error).await;
+        }
         let _ = child.wait().await;
+        // The desktop doesn't let apps watch the clipboard (GNOME, or Hyprland and Sway for
+        // a sandboxed Flatpak): trying again won't help.
+        if error.contains("data-control") {
+            warn!(
+                "this desktop doesn't let Pairly watch the clipboard: send it with the \
+                 Send Clipboard button instead"
+            );
+            return;
+        }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }

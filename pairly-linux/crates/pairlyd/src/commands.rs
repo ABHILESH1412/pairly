@@ -167,7 +167,8 @@ pub async fn run(
 }
 
 async fn execute(line: &str) -> (bool, String) {
-    let child = tokio::process::Command::new("sh")
+    // On the real PC, also when Pairly runs sandboxed (Flatpak).
+    let child = crate::sandbox::host_tokio_command("sh")
         .arg("-c")
         .arg(line)
         .current_dir(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
