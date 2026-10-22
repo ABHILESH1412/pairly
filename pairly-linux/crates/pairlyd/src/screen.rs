@@ -23,7 +23,8 @@ use pairly_plugins::input::{
     ButtonAction, InputHost, KeyInput, Modifiers, MouseButton, PointerButton, SpecialKey,
 };
 use pairly_plugins::screen::{
-    ScreenAction, ScreenFrame, ScreenHost, ScreenInput, ScreenKey, ScreenPlugin,
+    ScreenAction, ScreenAudio, ScreenFrame, ScreenHost, ScreenInput, ScreenKey, ScreenPlugin,
+    SwipeDirection,
 };
 use tracing::{debug, info, warn};
 
@@ -35,6 +36,8 @@ const WHEEL_STEP: f32 = 20.0;
 const STARTED: u8 = 1;
 const FRAME: u8 = 2;
 const STOPPED: u8 = 3;
+/// Sound: `[rate u32][channels u8][16-bit samples]`, both from the recorder and to the viewer.
+const AUDIO: u8 = 4;
 
 struct Viewer {
     tx: SyncSender<Vec<u8>>,
@@ -209,6 +212,15 @@ impl LinuxScreen {
                 self.end_cast(peer, Some(&String::from_utf8_lossy(&body)));
                 true
             }
+            AUDIO if body.len() > 5 => {
+                let audio = ScreenAudio {
+                    rate: u32::from_be_bytes([body[0], body[1], body[2], body[3]]),
+                    channels: body[4],
+                    data: body[5..].to_vec(),
+                };
+                let _ = plugin.audio(peer.id, &audio);
+                false
+            }
             _ => false,
         }
     }
@@ -381,6 +393,18 @@ impl LinuxScreen {
                     modifiers,
                 },
             ),
+            ScreenInput::Gesture { direction, .. } => match gesture_action(direction) {
+                Some(GestureAction::Keys(key, modifiers)) => pc.key(
+                    from,
+                    &KeyInput {
+                        text: None,
+                        key,
+                        modifiers,
+                    },
+                ),
+                Some(GestureAction::Hyprland(workspace)) => hyprland_workspace(workspace),
+                None => {}
+            },
         }
     }
 
@@ -588,8 +612,98 @@ fn parse_input(line: &str) -> Option<ScreenInput> {
             }
         }
         "combo" => parse_combo(rest)?,
+        // `gesture 4 left`: a touchpad swipe in Control mode.
+        "gesture" => {
+            let (fingers, direction) = rest.split_once(' ')?;
+            ScreenInput::Gesture {
+                fingers: fingers.parse().ok()?,
+                direction: match direction {
+                    "left" => SwipeDirection::Left,
+                    "right" => SwipeDirection::Right,
+                    "up" => SwipeDirection::Up,
+                    "down" => SwipeDirection::Down,
+                    _ => return None,
+                },
+            }
+        }
         _ => return None,
     })
+}
+
+/// What this desktop does for a swipe made on another PC's viewer.
+#[derive(Debug, PartialEq, Eq)]
+enum GestureAction {
+    /// A shortcut (a special key, or none: the modifiers tapped alone).
+    Keys(Option<SpecialKey>, Modifiers),
+    /// Hyprland: go to this workspace (`e+1`: the next one).
+    Hyprland(&'static str),
+}
+
+/// Fingers moving left show the next workspace, as on a touchpad here; up shows them all.
+fn gesture_action(direction: SwipeDirection) -> Option<GestureAction> {
+    let desktop = crate::desktop_env::vars()
+        .into_iter()
+        .find(|(k, _)| k == "XDG_CURRENT_DESKTOP")
+        .map(|(_, v)| v.to_ascii_lowercase())
+        .unwrap_or_default();
+    gesture_for(&desktop, direction)
+}
+
+fn gesture_for(desktop: &str, direction: SwipeDirection) -> Option<GestureAction> {
+    use GestureAction::{Hyprland, Keys};
+    use SwipeDirection::{Down, Left, Right, Up};
+    let mods = |ctrl, alt, logo| Modifiers {
+        ctrl,
+        alt,
+        shift: false,
+        logo,
+    };
+    Some(if desktop.contains("hyprland") {
+        match direction {
+            Left => Hyprland("e+1"),
+            Right => Hyprland("e-1"),
+            Up | Down => return None,
+        }
+    } else if desktop.contains("gnome") {
+        match direction {
+            Left => Keys(Some(SpecialKey::PageDown), mods(false, false, true)),
+            Right => Keys(Some(SpecialKey::PageUp), mods(false, false, true)),
+            // The overview.
+            Up => Keys(None, mods(false, false, true)),
+            Down => return None,
+        }
+    } else if desktop.contains("kde") {
+        match direction {
+            Left => Keys(Some(SpecialKey::Right), mods(true, false, true)),
+            Right => Keys(Some(SpecialKey::Left), mods(true, false, true)),
+            Up | Down => return None,
+        }
+    } else {
+        // Xfce, Cinnamon, MATE and most others.
+        match direction {
+            Left => Keys(Some(SpecialKey::Right), mods(true, true, false)),
+            Right => Keys(Some(SpecialKey::Left), mods(true, true, false)),
+            Up | Down => return None,
+        }
+    })
+}
+
+/// Switch Hyprland's workspace (the Lua configuration's syntax, else the older one).
+fn hyprland_workspace(workspace: &'static str) {
+    std::thread::spawn(move || {
+        let lua = format!("hl.dsp.focus({{ workspace = \"{workspace}\" }})");
+        let ok = crate::desktop_env::command("hyprctl")
+            .args(["dispatch", &lua])
+            .output()
+            .is_ok_and(|o| {
+                o.status.success() && !String::from_utf8_lossy(&o.stdout).contains("rror")
+            });
+        if !ok {
+            let _ = crate::desktop_env::command("hyprctl")
+                .args(["dispatch", "workspace", workspace])
+                .output();
+        }
+    });
 }
 
 /// `ctrl+shift key f5`, `ctrl text c`, `super` (the Windows key alone), `- key enter`.
@@ -697,6 +811,14 @@ impl ScreenHost for LinuxScreen {
         self.to_viewer(from.id, message(FRAME, &payload), droppable);
     }
 
+    fn audio(&self, from: &PeerInfo, audio: ScreenAudio) {
+        let mut payload = Vec::with_capacity(5 + audio.data.len());
+        payload.extend_from_slice(&audio.rate.to_be_bytes());
+        payload.push(audio.channels);
+        payload.extend_from_slice(&audio.data);
+        self.to_viewer(from.id, message(AUDIO, &payload), true);
+    }
+
     fn stopped(&self, from: &PeerInfo, reason: &str) {
         if self.lock().contains_key(&from.id) {
             warn!(device = %from.id, reason, "the phone stopped sharing its screen");
@@ -787,6 +909,23 @@ mod tests {
                 }
             })
         );
+        assert_eq!(
+            parse_input("gesture 4 left"),
+            Some(ScreenInput::Gesture {
+                fingers: 4,
+                direction: SwipeDirection::Left
+            })
+        );
+        assert_eq!(parse_input("gesture 4 sideways"), None);
+        assert_eq!(
+            gesture_for("hyprland", SwipeDirection::Left),
+            Some(GestureAction::Hyprland("e+1"))
+        );
+        assert_eq!(gesture_for("hyprland", SwipeDirection::Up), None);
+        assert!(matches!(
+            gesture_for("gnome", SwipeDirection::Right),
+            Some(GestureAction::Keys(Some(SpecialKey::PageUp), m)) if m.logo
+        ));
         assert_eq!(
             parse_input("combo super"),
             Some(ScreenInput::Combo {

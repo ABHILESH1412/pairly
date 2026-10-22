@@ -19,6 +19,7 @@ clipboard, media, screens and remote control, all end-to-end encrypted.
 - [🤝 Pair your devices](#-pair-your-devices)
 - [🌍 Use it away from home (free relay)](#-use-it-away-from-home-free-relay)
 - [🗂️ Browse files between devices](#️-browse-files-between-devices)
+- [📷 Your phone as a webcam](#-your-phone-as-a-webcam)
 - [🔄 Updates](#-updates)
 - [🔒 Security and privacy](#-security-and-privacy)
 - [🛠️ Troubleshooting](#️-troubleshooting)
@@ -49,12 +50,19 @@ clipboard, media, screens and remote control, all end-to-end encrypted.
 
 ### 📋 Clipboard and links
 - **Copy on one device, paste on the other**, automatically or when you ask.
+- 🖼️ **Pictures too:** copy an image or a screenshot, paste it on the other device.
 - **Links** you send open in the browser on the other side; text is copied.
 
 ### 🖥️ Screens
 - **See and control your phone's screen** on the PC: click, type, scroll.
 - **See and control your PC's screen** on the phone, with zoom and rotate.
 - **PC to PC:** see and control your other computer (Linux ↔ Windows).
+- 🔊 **With sound:** you hear what plays on the shared screen (on Android 10 or newer, apps
+  that forbid recording stay silent).
+- 🎮 **Control mode (PC to PC):** press the ⌨ button, or go full screen, and *everything* goes
+  to the other PC: the Windows/Super key, Alt+Tab, shortcuts, and touchpad swipes for switching
+  desktops. Press **Ctrl+Alt** on their own and let go to get your keys back (Ctrl+Alt+anything
+  still goes to the other PC).
 
 ### 🖱️ Remote control
 - **Touchpad and keyboard:** your phone moves the PC's mouse and types on it.
@@ -64,6 +72,10 @@ clipboard, media, screens and remote control, all end-to-end encrypted.
 ### 🎵 Media
 - **Control the PC's music and videos** (Spotify, browsers…) from the phone, lock screen included.
 - **Control the phone's music** from the PC.
+
+### 📷 Webcam
+- **Your phone's camera as the PC's webcam**, front or back, in any video app (browsers, Zoom,
+  Teams, OBS…). [Setup below](#-your-phone-as-a-webcam).
 
 ### 🔋 And more
 - **🔍 Find my phone:** rings it at full volume, even on silent. The phone can ring the PC too.
@@ -85,7 +97,11 @@ clipboard, media, screens and remote control, all end-to-end encrypted.
 | Browse other devices' files | ✅ | ✅ | ✅ (a PC's shared folder) |
 | Share its own files | ✅ (a folder you pick) | ✅ (a folder you pick) | ✅ (its storage) |
 | Clipboard both ways | ✅ | ✅ | ✅ |
+| Copy and paste pictures | ✅ | ✅ | ✅ |
 | See and control the other screen | ✅ | ✅ | ✅ |
+| Sound with the screen | ✅ | ✅ | ✅ (Android 10+) |
+| Control mode (every key and gesture) | ✅ | ✅ | — |
+| Phone camera as webcam | ✅ (one-time setup) | ⏳ not yet | ✅ (films) |
 | Phone as touchpad, keyboard, presenter | ✅ | ✅ | ✅ |
 | Media control | ✅ | ✅ | ✅ |
 | Find my phone, battery, power | ✅ | ✅ | ✅ |
@@ -103,7 +119,10 @@ Pairly always uses the best link it has, and moves between them without losing a
 | 📶 **Bluetooth** | No shared network, devices close by (paired in Bluetooth settings first). | ⚡ slow, fine for messages |
 | 🌍 **Internet relay** | Anywhere else: mobile data, another Wi-Fi. | ⚡⚡ good |
 
-📺 **Screen sharing needs the same Wi-Fi**; everything else works over all three.
+📺 **Screen sharing and the webcam need the same Wi-Fi**; everything else works over all three.
+
+🏃 **Leaving Wi-Fi?** Pairly notices when your network changes and checks the connection at
+once, so it moves to the relay in a few seconds instead of waiting for the link to time out.
 
 ---
 
@@ -288,6 +307,36 @@ hidden and system files.
 
 ---
 
+## 📷 Your phone as a webcam
+
+Open your phone in Pairly on the PC and click **📷 Webcam**, then pick the **front** or **back**
+camera and accept on the phone. In your video app, choose **Pairly Camera**. Click the tile
+again to stop (or stop it from the phone's notification). Both devices must be on the same Wi-Fi.
+
+🐧 **Linux needs a virtual camera, set up once** (it's a kernel module, so it needs `sudo`):
+
+| Distribution | Install |
+|---|---|
+| Arch, Manjaro, EndeavourOS | `sudo pacman -S v4l2loopback-dkms` (and your kernel's headers, e.g. `linux-headers`) |
+| Fedora | `sudo dnf install v4l2loopback` (from RPM Fusion) |
+| Ubuntu, Debian, Mint, Pop!_OS | `sudo apt install v4l2loopback-dkms` |
+| openSUSE | `sudo zypper install v4l2loopback-kmp-default` |
+
+Then load it now and at every start:
+
+```bash
+echo v4l2loopback | sudo tee /etc/modules-load.d/pairly-camera.conf
+echo 'options v4l2loopback exclusive_caps=1 card_label="Pairly Camera"' | sudo tee /etc/modprobe.d/pairly-camera.conf
+sudo modprobe v4l2loopback exclusive_caps=1 card_label="Pairly Camera"
+```
+
+🎞️ It also needs GStreamer's `v4l2sink` (`gst-plugins-good`) and an H.264 decoder (`gst-libav`),
+which screen sharing already uses.
+
+🪟 **Windows:** not yet. Windows needs a signed camera driver for this; it's planned.
+
+---
+
 ## 🔄 Updates
 
 All three apps **update themselves** when a new version is released here, and tell you when
@@ -345,8 +394,9 @@ The details, including what a paired device is trusted to do, are in
 <details>
 <summary>🐢 Switching to the relay takes a while after I leave Wi-Fi</summary>
 
-When Wi-Fi fades away, it looks to Pairly as if the link simply went quiet, so it waits up to
-about 45 seconds before switching to the relay. Turning Wi-Fi off by hand also works.
+Pairly checks the link as soon as your PC or phone changes network, and switches within a few
+seconds. If Wi-Fi only fades without the network changing, it notices from the missing
+answers, which can take up to about 45 seconds.
 </details>
 
 <details>

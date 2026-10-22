@@ -231,6 +231,38 @@ async fn fail_over_and_back(relay_addr: String) {
     phone.node.shutdown().await;
 }
 
+/// Leaving home as it really happens: the phone's Wi-Fi goes away and its connection to the PC
+/// just goes quiet; the PC isn't told. The phone hears about it from Android and both move to
+/// the relay within seconds, not after the 45-second keepalive timeout.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_wifi_drop_moves_to_the_relay_quickly() {
+    init_logging();
+    let (relay, relay_addr) = start_relay().await;
+    let net = MemoryNetwork::new();
+    let mut pc = start(&net, "pc", Some(relay_addr), false).await;
+    let mut phone = start(&net, "phone", None, true).await;
+    pair(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    let left = std::time::Instant::now();
+    net.leave_silently("phone").await;
+    // Android's network callback.
+    phone.node.network_changed().await;
+    phone.wait_link(pc_id, TransportKind::Relay).await;
+    pc.wait_link(phone_id, TransportKind::Relay).await;
+    let took = left.elapsed();
+    assert!(took < Duration::from_secs(15), "took {took:?}");
+
+    pc.ping(phone_id, "on the relay");
+    phone.expect_pings(&["on the relay".into()]).await;
+    phone.ping(pc_id, "back to you");
+    pc.expect_pings(&["back to you".into()]).await;
+
+    pc.node.shutdown().await;
+    phone.node.shutdown().await;
+    relay.shutdown().await;
+}
+
 /// Raw protocol: a stream for a room nobody is in, with and without the right token.
 async fn raw_join(relay: &Relay, join: &Join) -> u8 {
     let mut endpoint =

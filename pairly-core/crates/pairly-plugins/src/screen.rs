@@ -33,6 +33,8 @@ pub const MAX_TEXT: usize = 1000;
 /// Frames waiting to go out before the sharer skips ahead (about 200 ms of video): beyond
 /// this the link is slower than the stream, and waiting would only make the picture lag.
 pub const MAX_VIDEO_BACKLOG: usize = 6;
+/// Sound packets (20 ms each) allowed to wait before newer ones are dropped.
+pub const MAX_AUDIO_BACKLOG: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +90,37 @@ impl PacketBody for ScreenFrame {
     const TYPE: &'static str = "screen.frame";
 }
 
+/// Sharer → viewer: a moment of the shared device's sound, as 16-bit signed little-endian
+/// samples, channels interleaved. Uncompressed: screen sharing only runs on the local network,
+/// where its 1.5 Mbit/s (48 kHz stereo) is less than the video's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenAudio {
+    pub rate: u32,
+    pub channels: u8,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+impl PacketBody for ScreenAudio {
+    const TYPE: &'static str = "screen.audio";
+}
+
+/// The most audio in one packet (about a third of a second at 48 kHz stereo).
+pub const MAX_AUDIO: usize = 64 * 1024;
+
+impl ScreenAudio {
+    fn usable(&self) -> bool {
+        (8_000..=96_000).contains(&self.rate)
+            && (1..=2).contains(&self.channels)
+            && !self.data.is_empty()
+            && self.data.len() <= MAX_AUDIO
+            && self
+                .data
+                .len()
+                .is_multiple_of(2 * usize::from(self.channels))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenKey {
@@ -99,6 +132,16 @@ pub enum ScreenKey {
     /// Removes the character after the cursor.
     Delete,
     /// The arrows move the cursor in the focused text field.
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Which way a touchpad swipe's fingers moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwipeDirection {
     Left,
     Right,
     Up,
@@ -158,6 +201,13 @@ pub enum ScreenInput {
         text: Option<String>,
         #[serde(default)]
         modifiers: Modifiers,
+    },
+    /// A PC's screen: a touchpad swipe with several fingers (in Control mode, where the
+    /// viewer's own desktop leaves its gestures alone). The sharer does what its desktop does
+    /// for that swipe: switch workspace or virtual desktop, show them all…
+    Gesture {
+        fingers: u8,
+        direction: SwipeDirection,
     },
 }
 
@@ -227,6 +277,10 @@ impl ScreenInput {
                     dy: steps(dy)?,
                 }
             }
+            Self::Gesture { fingers, direction } if (3..=5).contains(&fingers) => {
+                Self::Gesture { fingers, direction }
+            }
+            Self::Gesture { .. } => return None,
             Self::Combo { text: Some(t), .. } if t.len() > MAX_TEXT => return None,
             Self::Combo {
                 key,
@@ -257,6 +311,8 @@ pub trait ScreenHost: Send + Sync + 'static {
 
     fn started(&self, _from: &PeerInfo, _width: u32, _height: u32) {}
     fn frame(&self, _from: &PeerInfo, _frame: ScreenFrame) {}
+    /// Sound to play along with the picture.
+    fn audio(&self, _from: &PeerInfo, _audio: ScreenAudio) {}
     fn stopped(&self, _from: &PeerInfo, _reason: &str) {}
     /// The device went away: end any stream with it (either side).
     fn disconnected(&self, _peer: DeviceId) {}
@@ -336,6 +392,22 @@ impl ScreenPlugin {
     ///
     /// A key frame first drops the frames still waiting, so the viewer jumps to the present
     /// instead of playing out a backlog.
+    /// Sharer: a moment of sound for `peer`. Sound late by more than a moment is dropped
+    /// rather than queued, so it never lags behind the picture.
+    pub fn audio(&self, peer: DeviceId, audio: &ScreenAudio) -> Result<()> {
+        if !audio.usable() {
+            return Err(CoreError::Violation("bad screen audio"));
+        }
+        self.require_lan(peer)?;
+        if self.peers.queued(peer, Priority::Interactive).unwrap_or(0) > MAX_AUDIO_BACKLOG {
+            return Ok(());
+        }
+        self.peers.send(
+            peer,
+            OutboundPacket::unreliable(audio, Priority::Interactive)?,
+        )
+    }
+
     pub fn frame(&self, peer: DeviceId, frame: &ScreenFrame) -> Result<bool> {
         if frame.data.len() > MAX_FRAME {
             return Err(CoreError::Violation("screen frame too large"));
@@ -391,6 +463,7 @@ impl Plugin for ScreenPlugin {
             ScreenStopped::TYPE,
             ScreenFrame::TYPE,
             ScreenInput::TYPE,
+            ScreenAudio::TYPE,
         ]
     }
 
@@ -451,6 +524,11 @@ impl Plugin for ScreenPlugin {
                 Ok(f) if f.data.len() <= MAX_FRAME && lan_only(ctx) => self.host.frame(&from, f),
                 Ok(_) => {}
                 Err(e) => debug!(peer = %from.id, error = %e, "bad screen.frame"),
+            },
+            ScreenAudio::TYPE => match packet.body::<ScreenAudio>() {
+                Ok(a) if a.usable() && lan_only(ctx) => self.host.audio(&from, a),
+                Ok(_) => {}
+                Err(e) => debug!(peer = %from.id, error = %e, "bad screen.audio"),
             },
             ScreenStopped::TYPE => match packet.body::<ScreenStopped>() {
                 Ok(s) => self.host.stopped(&from, &s.reason),

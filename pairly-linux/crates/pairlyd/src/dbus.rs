@@ -115,6 +115,19 @@ impl DaemonIface {
         Ok(())
     }
 
+    /// Film with a phone's camera as this PC's webcam (`back`: its back camera), or stop.
+    async fn webcam(&self, id: &str, on: bool, back: bool) -> fdo::Result<()> {
+        self.features
+            .webcam
+            .request(parse_id(id)?, on, back)
+            .map_err(fdo::Error::Failed)
+    }
+
+    /// Whether a phone films for this PC now.
+    async fn webcam_on(&self, id: &str) -> fdo::Result<bool> {
+        Ok(self.features.webcam.is_on(parse_id(id)?))
+    }
+
     /// (on, folder, allow changes): the folder paired devices may browse.
     async fn file_sharing(&self) -> (bool, String, bool) {
         let s = self.features.file_share.get();
@@ -244,13 +257,21 @@ impl DaemonIface {
     }
 
     async fn send_clipboard(&self, id: &str) -> fdo::Result<()> {
-        let text = crate::clipboard::read()
-            .await
-            .ok_or_else(|| fdo::Error::Failed("the clipboard has no text".into()))?;
-        self.features
-            .clipboard
-            .send_to(parse_id(id)?, &text)
-            .map_err(failed)
+        let peer = parse_id(id)?;
+        match crate::clipboard::read_any().await {
+            Some(crate::clipboard::Content::Text(text)) => {
+                self.features.clipboard.send_to(peer, &text)
+            }
+            Some(crate::clipboard::Content::Image(mime, data)) => {
+                self.features.clipboard.send_image_to(peer, &mime, &data)
+            }
+            None => {
+                return Err(fdo::Error::Failed(
+                    "the clipboard has no text or image".into(),
+                ));
+            }
+        }
+        .map_err(failed)
     }
 
     async fn send_files(&self, id: &str, paths: Vec<String>) -> fdo::Result<Vec<u64>> {

@@ -26,16 +26,15 @@ class ClipboardActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus) return
-        val clip = getSystemService(ClipboardManager::class.java)?.primaryClip
-        val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
+        val copied = ClipboardSync.read(this, getSystemService(ClipboardManager::class.java)?.primaryClip)
         if (intent.getBooleanExtra(EXTRA_AUTO, false)) {
-            if (!text.isNullOrEmpty() && text != ClipboardSync.last) {
-                ClipboardSync.last = text
-                Pairly.sendClipboardQuietly(text)
+            if (copied != null && ClipboardSync.key(copied) != ClipboardSync.last) {
+                ClipboardSync.last = ClipboardSync.key(copied)
+                Pairly.sendClipboardQuietly(copied)
             }
         } else {
-            ClipboardSync.last = text
-            Pairly.sendClipboardToAll(text)
+            ClipboardSync.last = copied?.let(ClipboardSync::key)
+            Pairly.sendClipboardToAll(copied)
         }
         finish()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

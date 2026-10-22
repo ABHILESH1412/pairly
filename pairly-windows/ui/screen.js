@@ -125,6 +125,45 @@ function onFrame(flags, data) {
   }
 }
 
+/** The other device's sound, played as it comes: each piece scheduled right after the last,
+ *  a little ahead of now; when it falls more than a moment behind, it starts again from now
+ *  (so the sound stays with the picture). */
+const sound = {
+  context: null,
+  next: 0,
+  play(rate, channels, pcm) {
+    if (!this.context) {
+      try { this.context = new AudioContext({ latencyHint: "interactive" }); } catch { return; }
+    }
+    const ctx = this.context;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const frames = Math.floor(pcm.length / 2 / channels);
+    if (!frames) return;
+    const buffer = ctx.createBuffer(channels, frames, rate);
+    const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+    for (let c = 0; c < channels; c++) {
+      const out = buffer.getChannelData(c);
+      for (let i = 0; i < frames; i++) out[i] = view.getInt16((i * channels + c) * 2, true) / 32768;
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (this.next < now + 0.02 || this.next > now + 0.3) this.next = now + 0.06;
+    source.start(this.next);
+    this.next += buffer.duration;
+  },
+  stop() {
+    this.context?.close().catch(() => {});
+    this.context = null;
+  },
+};
+
+// Browsers keep sound paused until the page is used: the first click or key starts it.
+for (const type of ["pointerdown", "keydown"]) {
+  window.addEventListener(type, () => sound.context?.resume().catch(() => {}), true);
+}
+
 const channel = new tauri.core.Channel();
 channel.onmessage = (msg) => {
   const bytes = msg instanceof ArrayBuffer ? new Uint8Array(msg) : new Uint8Array(msg);
@@ -137,7 +176,11 @@ channel.onmessage = (msg) => {
     status(`Starting ${name}'s screen…`);
   } else if (kind === 2 && bytes.length > 2) {
     onFrame(bytes[1], bytes.subarray(2));
+  } else if (kind === 4 && bytes.length > 6) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset);
+    sound.play(view.getUint32(1), bytes[5], bytes.subarray(6));
   } else if (kind === 3) {
+    sound.stop();
     const reason = new TextDecoder().decode(bytes.subarray(1));
     canvas.classList.add("idle");
     status(`${name} stopped sharing${reason ? `: ${reason}` : ""}. Close this window, or open it again from Pairly.`);
@@ -329,20 +372,85 @@ function pcControls() {
     if (input) send(input);
   });
 
-  // Keys this PC keeps for itself (the Windows key, Alt+Tab), as buttons.
+  // Keys this PC keeps for itself (the Windows key, Alt+Tab), as buttons; Control mode and
+  // full screen hand them over entirely.
   const keys = document.querySelector(".keys");
   keys.innerHTML = `
     <button data-combo="start" title="Start menu (Windows key)">⊞</button>
-    <button data-combo="switch" title="Switch windows (Alt+Tab)">⧉</button>`;
+    <button data-combo="switch" title="Switch windows (Alt+Tab)">⧉</button>
+    <button id="control" title="Control mode: the Windows key, Alt+Tab and every shortcut go to this PC (Ctrl+Alt to release)">⌨</button>
+    <button id="fullscreen" title="Full screen (Control mode on)">⛶</button>`;
+  controlMode(keys);
   const combos = {
     start: { kind: "combo", modifiers: { ...NO_MODIFIERS, super: true } },
     switch: { kind: "combo", key: "tab", modifiers: { ...NO_MODIFIERS, alt: true } },
   };
-  keys.querySelectorAll("button").forEach((b) => {
+  keys.querySelectorAll("button[data-combo]").forEach((b) => {
     b.tabIndex = -1;
     b.addEventListener("mousedown", (e) => e.preventDefault()); // keep the keyboard on the screen
     b.addEventListener("click", () => send(combos[b.dataset.combo]));
   });
+}
+
+/** Control mode: Windows' own shortcuts go to the other PC too, while this window is in front.
+ *  On with its button or in full screen; Ctrl+Alt pressed and let go on their own turns it off
+ *  (Ctrl+Alt+anything still goes there). */
+function controlMode(keys) {
+  const button = keys.querySelector("#control");
+  const banner = document.getElementById("banner");
+  document.getElementById("banner-text").textContent =
+    `Controlling ${name}: the Windows key, Alt+Tab and every shortcut go there. Ctrl+Alt gives them back.`;
+  const win = tauri.window.getCurrentWindow();
+  let on = false, fullscreen = false;
+
+  async function set(value) {
+    if (on === value) return;
+    on = value;
+    button.classList.toggle("on", on);
+    banner.hidden = !on;
+    await invoke("screen_control", { id, on }).catch(() => {});
+    if (!on && fullscreen) {
+      fullscreen = false;
+      await win.setFullscreen(false).catch(() => {});
+    }
+  }
+  button.addEventListener("click", () => set(!on));
+  document.getElementById("release").addEventListener("click", () => set(false));
+  keys.querySelector("#fullscreen").addEventListener("click", async () => {
+    fullscreen = true;
+    await win.setFullscreen(true).catch(() => {});
+    set(true);
+  });
+  // Leaving full screen (another way) ends Control mode too.
+  win.onResized(async () => {
+    if (fullscreen && !(await win.isFullscreen().catch(() => true))) {
+      fullscreen = false;
+      set(false);
+    }
+  });
+  for (const b of [button, keys.querySelector("#fullscreen"), document.getElementById("release")]) {
+    b.tabIndex = -1;
+    b.addEventListener("mousedown", (e) => e.preventDefault()); // keep the keyboard on the screen
+  }
+
+  // Ctrl+Alt alone: out of Control mode.
+  let ctrl = false, alt = false, both = false, other = false;
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Control") ctrl = true;
+    else if (e.key === "Alt") alt = true;
+    else other = true;
+    if (ctrl && alt) both = true;
+  }, true);
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Control") ctrl = false;
+    else if (e.key === "Alt") alt = false;
+    else return;
+    if (ctrl || alt) return;
+    const lone = both && !other;
+    both = other = false;
+    if (lone && on) set(false);
+  }, true);
+  window.addEventListener("beforeunload", () => { if (on) invoke("screen_control", { id, on: false }); });
 }
 
 if (pc) pcControls();

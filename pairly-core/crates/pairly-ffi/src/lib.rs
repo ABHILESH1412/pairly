@@ -489,6 +489,8 @@ impl From<BatteryData> for BatteryState {
 pub trait DeviceHandler: Send + Sync {
     /// Put text from a paired device on the clipboard.
     fn set_clipboard(&self, from_id: String, from_name: String, text: String);
+    /// Put an image from a paired device on the clipboard (`mime` like `image/png`).
+    fn set_clipboard_image(&self, from_id: String, from_name: String, mime: String, data: Vec<u8>);
     /// Start or stop ringing (find my phone).
     fn ring(&self, from_id: String, from_name: String, on: bool);
     /// The phone's battery right now.
@@ -509,6 +511,15 @@ impl ClipboardHost for ForeignDeviceHost {
     fn set_clipboard(&self, from: &PeerInfo, text: &str) {
         self.0
             .set_clipboard(from.id.to_string(), from.name.clone(), text.to_owned());
+    }
+
+    fn set_clipboard_image(&self, from: &PeerInfo, mime: &str, data: &[u8]) {
+        self.0.set_clipboard_image(
+            from.id.to_string(),
+            from.name.clone(),
+            mime.to_owned(),
+            data.to_vec(),
+        );
     }
 }
 
@@ -670,6 +681,7 @@ pub struct Node {
     input: Arc<pairly_plugins::input::InputPlugin>,
     power: Arc<pairly_plugins::power::PowerPlugin>,
     screen: Arc<pairly_plugins::screen::ScreenPlugin>,
+    camera: Arc<pairly_plugins::camera::CameraPlugin>,
     files: Arc<pairly_plugins::files::FilesPlugin>,
     forward: AbortHandle,
 }
@@ -697,6 +709,7 @@ struct Parts {
     files: Option<Arc<dyn FilesHandler>>,
     power: Option<Arc<dyn PowerHandler>>,
     screen: Option<Arc<dyn phone::ScreenHandler>>,
+    camera: Option<Arc<dyn phone::CameraHandler>>,
 }
 
 fn missing(what: &str) -> PairlyError {
@@ -728,6 +741,7 @@ impl NodeSetup {
                 files: None,
                 power: None,
                 screen: None,
+                camera: None,
             }),
         })
     }
@@ -772,6 +786,10 @@ impl NodeSetup {
         self.lock().files = Some(handler);
     }
 
+    pub fn camera(&self, handler: Arc<dyn phone::CameraHandler>) {
+        self.lock().camera = Some(handler);
+    }
+
     pub fn screen(&self, handler: Arc<dyn phone::ScreenHandler>) {
         self.lock().screen = Some(handler);
     }
@@ -801,6 +819,7 @@ impl NodeSetup {
                 files: p.files.clone(),
                 power: p.power.clone(),
                 screen: p.screen.clone(),
+                camera: p.camera.clone(),
             }
         };
         let task = runtime().spawn(start(parts));
@@ -838,6 +857,9 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
     let files = pairly_plugins::files::FilesPlugin::new(Arc::new(phone::ForeignFiles(files)));
     let screen = pairly_plugins::screen::ScreenPlugin::new(Arc::new(phone::ForeignScreen(
         parts.screen.ok_or_else(|| missing("screen"))?,
+    )));
+    let camera = pairly_plugins::camera::CameraPlugin::new(Arc::new(phone::ForeignCamera(
+        parts.camera.ok_or_else(|| missing("camera"))?,
     )));
     let power = pairly_plugins::power::PowerPlugin::new(Arc::new(phone::ForeignPower(
         parts.power.ok_or_else(|| missing("power"))?,
@@ -892,6 +914,7 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
         .plugin(files.clone())
         .plugin(power.clone())
         .plugin(screen.clone())
+        .plugin(camera.clone())
         .start()
         .await?;
     let mut events = node.subscribe();
@@ -919,6 +942,7 @@ async fn start(parts: Parts) -> Result<Node, PairlyError> {
         input,
         power,
         screen,
+        camera,
         files,
         forward: forward.abort_handle(),
     })
@@ -1006,6 +1030,18 @@ impl Node {
     /// Send text to every connected device's clipboard (skipped if it was just received).
     pub fn clipboard_changed(&self, text: String) {
         self.clipboard.local_changed(&text);
+    }
+
+    /// Put an image on a device's clipboard (`mime` like `image/png`).
+    pub fn send_clipboard_image(
+        &self,
+        device: String,
+        mime: String,
+        data: Vec<u8>,
+    ) -> Result<(), PairlyError> {
+        Ok(self
+            .clipboard
+            .send_image_to(parse_id(&device)?, &mime, &data)?)
     }
 
     /// Ask a device to start or stop ringing.
@@ -1272,7 +1308,52 @@ impl Node {
         Ok(self.screen.frame(parse_id(&device)?, &frame)?)
     }
 
+    /// The camera is filming for a PC (`width` × `height` pixels).
+    pub fn camera_started(
+        &self,
+        device: String,
+        width: u32,
+        height: u32,
+    ) -> Result<(), PairlyError> {
+        Ok(self.camera.started(parse_id(&device)?, width, height)?)
+    }
+
+    /// One encoded H.264 access unit of the camera. Returns `true` when the encoder should
+    /// make a key frame now (the link fell behind).
+    pub fn camera_frame(
+        &self,
+        device: String,
+        data: Vec<u8>,
+        key: bool,
+        config: bool,
+    ) -> Result<bool, PairlyError> {
+        let frame = pairly_plugins::screen::ScreenFrame { data, key, config };
+        Ok(self.camera.frame(parse_id(&device)?, &frame)?)
+    }
+
+    /// The camera stopped filming for a PC, and why.
+    pub fn camera_stopped(&self, device: String, reason: String) -> Result<(), PairlyError> {
+        Ok(self.camera.stopped(parse_id(&device)?, &reason)?)
+    }
+
     /// Sharing ended on this phone (or never started), and why.
+    /// The phone's sound while sharing its screen: 16-bit little-endian samples, channels
+    /// interleaved.
+    pub fn screen_audio(
+        &self,
+        device: String,
+        rate: u32,
+        channels: u8,
+        data: Vec<u8>,
+    ) -> Result<(), PairlyError> {
+        let audio = pairly_plugins::screen::ScreenAudio {
+            rate,
+            channels,
+            data,
+        };
+        Ok(self.screen.audio(parse_id(&device)?, &audio)?)
+    }
+
     pub fn screen_stopped(&self, device: String, reason: String) -> Result<(), PairlyError> {
         Ok(self.screen.stopped(parse_id(&device)?, &reason)?)
     }

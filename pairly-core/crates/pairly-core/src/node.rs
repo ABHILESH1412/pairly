@@ -330,11 +330,26 @@ impl PairlyNode {
         peer.session.send(packet)
     }
 
-    /// Tell every transport that the network changed (apps call this from OS callbacks).
+    /// Tell every transport that the network changed (apps call this from OS callbacks), and
+    /// check every live link at once: one over the old network is dead, and waiting for its
+    /// keepalive to run out would leave the device unreachable for most of a minute.
     pub async fn network_changed(&self) {
         for t in &self.inner.transports {
             t.network_changed().await;
         }
+        let sessions: Vec<Arc<Session>> = self
+            .inner
+            .lock()
+            .peers
+            .values()
+            .filter(|p| p.session.is_connected())
+            .map(|p| p.session.clone())
+            .collect();
+        let mut checks = tokio::task::JoinSet::new();
+        for session in sessions {
+            checks.spawn(async move { session.probe(PROBE_TIMEOUT).await });
+        }
+        while checks.join_next().await.is_some() {}
     }
 
     pub async fn shutdown(&self) {
@@ -402,6 +417,11 @@ const PAIRING_COOLDOWN: Duration = Duration::from_secs(10);
 const DIAL_STAGGER: Duration = Duration::from_millis(200);
 /// First retry delay when moving to a better link fails (doubles up to the maximum).
 const UPGRADE_RETRY: Duration = Duration::from_secs(10);
+/// How long a link gets to answer a check after the network changed (the relay's round trip
+/// is about half a second).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// ...and a faster link when a slower one arrives (a live local link answers in milliseconds).
+const FASTER_LINK_PROBE: Duration = Duration::from_secs(2);
 const UPGRADE_RETRY_MAX: Duration = Duration::from_secs(300);
 
 struct Inner {
@@ -780,8 +800,17 @@ impl Inner {
         };
         let _guard = attach_lock.lock().await;
         if session.is_connected() && !self.replaces(&session, &ch, &identity) {
-            debug!(%id, "keeping the existing channel");
-            return Ok(());
+            // A slower link while a faster one is up: the other device likely left the local
+            // network and can't reach us there any more, though our end hasn't noticed yet.
+            // Keep the faster link only if it still answers.
+            let slower = session
+                .transport()
+                .is_some_and(|t| t.rank() > ch.transport.rank());
+            if !slower || session.probe(FASTER_LINK_PROBE).await {
+                debug!(%id, "keeping the existing channel");
+                return Ok(());
+            }
+            info!(%id, link = ch.transport.as_str(), "the faster link stopped answering: switching");
         }
         if let Some(peer) = self.lock().peers.get_mut(&id) {
             peer.identity = Some(Arc::new(identity.clone()));

@@ -4,4 +4,6 @@
     <external-files-path name="downloads" path="Download/Pairly/" />
     <!-- Picture messages being sent (see phone/Sms.kt). -->
     <cache-path name="mms" path="mms/" />
+    <!-- An image copied on a PC, on the phone's clipboard (see device/DeviceFeatures.kt). -->
+    <cache-path name="clipboard" path="clipboard/" />
 </paths>

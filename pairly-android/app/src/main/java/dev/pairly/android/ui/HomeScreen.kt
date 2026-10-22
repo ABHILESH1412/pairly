@@ -191,8 +191,7 @@ fun HomeRoute() {
                 clipboard = {
                     // In the foreground, so Android lets us read the clipboard.
                     val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
-                    val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
-                    Pairly.sendClipboard(device, text)
+                    Pairly.sendClipboard(device, ClipboardSync.read(context, clip))
                 },
                 ring = { on ->
                     if (on) ringing.add(device.id) else ringing.remove(device.id)

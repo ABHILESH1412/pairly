@@ -127,8 +127,14 @@ impl Tray for PairlyTray {
                 activate: Box::new(move |tray: &mut Self| {
                     let clipboard = tray.features.clipboard.clone();
                     tokio::spawn(async move {
-                        if let Some(text) = crate::clipboard::read().await {
-                            let _ = clipboard.send_to(id, &text);
+                        match crate::clipboard::read_any().await {
+                            Some(crate::clipboard::Content::Text(text)) => {
+                                let _ = clipboard.send_to(id, &text);
+                            }
+                            Some(crate::clipboard::Content::Image(mime, data)) => {
+                                let _ = clipboard.send_image_to(id, &mime, &data);
+                            }
+                            None => {}
                         }
                     });
                 }),

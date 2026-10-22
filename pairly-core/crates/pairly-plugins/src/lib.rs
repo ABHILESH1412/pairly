@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod battery;
+pub mod camera;
 pub mod clipboard;
 pub mod command;
 pub mod contacts;

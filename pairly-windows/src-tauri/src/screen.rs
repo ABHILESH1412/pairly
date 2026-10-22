@@ -29,7 +29,7 @@ use pairly_plugins::input::{
     ButtonAction, KeyInput, LaserAction, LaserPointer, Modifiers, MouseButton, PointerButton,
     SpecialKey,
 };
-use pairly_plugins::screen::{ScreenAction, ScreenFrame, ScreenInput, ScreenKey};
+use pairly_plugins::screen::{ScreenAction, ScreenAudio, ScreenFrame, ScreenInput, ScreenKey};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -40,12 +40,16 @@ use crate::platform::toast;
 const STARTED: u8 = 1;
 const FRAME: u8 = 2;
 const STOPPED: u8 = 3;
+/// `[rate u32][channels u8][16-bit samples]`: the other device's sound.
+const AUDIO: u8 = 4;
 
 /// Close the laser overlay this long after the pointer was last hidden.
 const LASER_IDLE: Duration = Duration::from_secs(60);
 
 struct Cast {
     recording: Recording,
+    /// What this PC plays, along with the picture (stops when dropped).
+    _sound: Option<crate::platform::loopback::Loopback>,
     /// Where the shared monitor is on the desktop: (x, y, width, height) in pixels.
     monitor: (i32, i32, u32, u32),
     /// A viewing PC's mouse buttons held down here (let go when the sharing ends).
@@ -63,6 +67,28 @@ pub struct Screens {
     viewers: Mutex<HashMap<DeviceId, Channel<InvokeResponseBody>>>,
     casts: Mutex<HashMap<DeviceId, Cast>>,
     laser: Mutex<Laser>,
+}
+
+/// Windows' shortcut for a touchpad swipe: fingers left shows the next virtual desktop, right
+/// the previous one, up all windows (Task View), down the desktop.
+fn gesture_keys(direction: pairly_plugins::screen::SwipeDirection) -> KeyInput {
+    use pairly_plugins::screen::SwipeDirection;
+    let win = Modifiers {
+        logo: true,
+        ..Modifiers::default()
+    };
+    let win_ctrl = Modifiers { ctrl: true, ..win };
+    let (key, text, modifiers) = match direction {
+        SwipeDirection::Left => (Some(SpecialKey::Right), None, win_ctrl),
+        SwipeDirection::Right => (Some(SpecialKey::Left), None, win_ctrl),
+        SwipeDirection::Up => (Some(SpecialKey::Tab), None, win),
+        SwipeDirection::Down => (None, Some("d".to_owned()), win),
+    };
+    KeyInput {
+        text,
+        key,
+        modifiers,
+    }
 }
 
 pub fn label(peer: DeviceId) -> String {
@@ -177,6 +203,8 @@ impl Screens {
 
     /// The viewer window closed: the phone can stop sharing.
     pub fn viewer_closed(&self, peer: DeviceId) {
+        // Windows gets its shortcuts back.
+        crate::platform::keyhook::control(None);
         if lock(&self.viewers).remove(&peer).is_some()
             && let Some(plugin) = self.plugin()
         {
@@ -203,6 +231,15 @@ impl Screens {
         out.push(FRAME);
         out.push(flags);
         out.extend_from_slice(&frame.data);
+        self.to_viewer(peer, InvokeResponseBody::Raw(out));
+    }
+
+    pub fn viewer_audio(&self, peer: DeviceId, audio: &ScreenAudio) {
+        let mut out = Vec::with_capacity(audio.data.len() + 6);
+        out.push(AUDIO);
+        out.extend_from_slice(&audio.rate.to_be_bytes());
+        out.push(audio.channels);
+        out.extend_from_slice(&audio.data);
         self.to_viewer(peer, InvokeResponseBody::Raw(out));
     }
 
@@ -269,10 +306,26 @@ impl Screens {
         }))
         .map_err(|e| format!("can't record the screen: {e}"))?;
         let monitor = recording.monitor();
+        let sound = crate::platform::loopback::start(Box::new({
+            let (weak, id) = (weak.clone(), from.id);
+            move |rate, channels, data| {
+                if let Some(plugin) = weak.upgrade().and_then(|b| b.screens.plugin()) {
+                    let _ = plugin.audio(
+                        id,
+                        &ScreenAudio {
+                            rate,
+                            channels,
+                            data,
+                        },
+                    );
+                }
+            }
+        }));
         lock(&self.casts).insert(
             from.id,
             Cast {
                 recording,
+                _sound: sound,
                 monitor,
                 held: Vec::new(),
             },
@@ -437,6 +490,8 @@ impl Screens {
                 key,
                 modifiers,
             }),
+            // A swipe made on the viewer's touchpad: what Windows does for it here.
+            ScreenInput::Gesture { direction, .. } => pc.key(gesture_keys(direction)),
         }
     }
 

@@ -14,6 +14,7 @@ mod input;
 mod keyring;
 mod laser;
 mod media;
+mod network;
 mod notification_apps;
 mod notifications;
 mod platform;
@@ -25,6 +26,7 @@ mod sms;
 mod telephony;
 mod tray;
 mod update;
+mod webcam;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -85,6 +87,8 @@ pub struct Features {
     /// The folder this PC shares, if any.
     pub file_share: Arc<file_share::FileShare>,
     pub screen_host: Arc<screen::LinuxScreen>,
+    /// A phone's camera as this PC's webcam.
+    pub webcam: Arc<webcam::Webcam>,
 }
 
 /// The PC has no contacts of its own; it only asks phones for theirs.
@@ -186,6 +190,9 @@ async fn main() -> Result<()> {
     let screen_host = screen::LinuxScreen::new();
     let screen_plugin = pairly_plugins::screen::ScreenPlugin::new(screen_host.clone());
     screen_host.set_plugin(&screen_plugin);
+    let webcam = webcam::Webcam::new();
+    let camera_plugin = pairly_plugins::camera::CameraPlugin::new(webcam.clone());
+    webcam.set_plugin(&camera_plugin);
     commands.set_plugin(&command);
     let file_share = Arc::new(file_share::FileShare::new(config.files.clone()));
     let features = Features {
@@ -207,6 +214,7 @@ async fn main() -> Result<()> {
         files: FilesPlugin::new(file_share.clone()),
         file_share,
         screen_host,
+        webcam,
     };
     let node = builder
         .plugin(Arc::new(PingPlugin))
@@ -220,6 +228,7 @@ async fn main() -> Result<()> {
         .plugin(features.contacts.clone())
         .plugin(features.power.clone())
         .plugin(screen_plugin)
+        .plugin(camera_plugin)
         .plugin(features.files.clone())
         .plugin(features.sms.clone())
         .plugin(features.command.clone())
@@ -261,6 +270,7 @@ async fn main() -> Result<()> {
         })?;
     info!(id = %node.device_id(), "ready");
     updater.set_conn(conn.clone());
+    features.webcam.set_conn(conn.clone());
     // As a Flatpak there's no systemd service: the desktop starts the daemon at login.
     sandbox::autostart(&conn, true).await;
     tokio::spawn(updater.clone().run());
@@ -299,6 +309,7 @@ async fn main() -> Result<()> {
         config.pause_media_for_calls,
     ));
     tokio::spawn(sms::run(conn.clone(), sms_events));
+    tokio::spawn(network::watch(node.clone()));
     tokio::spawn(commands::run(conn.clone(), commands, command_runs));
     tokio::spawn(media::run(
         conn.clone(),

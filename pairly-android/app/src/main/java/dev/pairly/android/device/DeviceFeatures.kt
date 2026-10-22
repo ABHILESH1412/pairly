@@ -11,6 +11,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
+import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
+import java.io.File
 import dev.pairly.android.Pairly
 import dev.pairly.android.R
 import dev.pairly.core.ffi.BatteryData
@@ -33,6 +36,28 @@ class DeviceFeatures(context: Context) : DeviceHandler {
             }
             context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
             Pairly.say(context.getString(R.string.clipboard_received, fromName))
+        }
+    }
+
+    override fun setClipboardImage(fromId: String, fromName: String, mime: String, data: ByteArray) {
+        // A file the clipboard points to; the previous copied image is no longer needed.
+        val dir = File(context.cacheDir, "clipboard").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "png"
+        val file = File(dir, "copied-${System.currentTimeMillis()}.$ext").apply { writeBytes(data) }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+        main.post {
+            val clip = ClipData.newUri(context.contentResolver, context.getString(R.string.app_name), uri)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                clip.description.extras = PersistableBundle().apply {
+                    putBoolean(ClipDescription.EXTRA_IS_REMOTE_DEVICE, true)
+                }
+            }
+            ClipboardSync.last = ClipboardSync.key(ClipboardSync.Copied.Image(uri))
+            context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+            Pairly.say(context.getString(R.string.clipboard_image_received, fromName))
         }
     }
 

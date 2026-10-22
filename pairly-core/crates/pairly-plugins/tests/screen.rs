@@ -9,7 +9,7 @@ use pairly_core::memory::MemoryNetwork;
 use pairly_core::{DeviceType, NodeConfig, NodeEvent, PairlyNode, PeerInfo};
 use pairly_plugins::input::{ButtonAction, Modifiers, MouseButton, SpecialKey};
 use pairly_plugins::screen::{
-    ScreenAction, ScreenFrame, ScreenHost, ScreenInput, ScreenKey, ScreenPlugin,
+    ScreenAction, ScreenAudio, ScreenFrame, ScreenHost, ScreenInput, ScreenKey, ScreenPlugin,
 };
 use tokio::sync::mpsc;
 
@@ -20,6 +20,7 @@ enum Call {
     Input(ScreenInput),
     Started(u32, u32),
     Frame(usize, bool),
+    Audio(u32, u8, usize),
     Stopped(String),
 }
 
@@ -53,6 +54,9 @@ impl ScreenHost for Host {
     }
     fn frame(&self, _: &PeerInfo, f: ScreenFrame) {
         self.call(Call::Frame(f.data.len(), f.key));
+    }
+    fn audio(&self, _: &PeerInfo, a: ScreenAudio) {
+        self.call(Call::Audio(a.rate, a.channels, a.data.len()));
     }
     fn stopped(&self, _: &PeerInfo, reason: &str) {
         self.call(Call::Stopped(reason.to_owned()));
@@ -149,6 +153,24 @@ async fn share_watch_control_and_stop() {
             .frame(pc_id, &frame(2_000_000, true, false))
             .is_err(),
         "frame size cap"
+    );
+
+    // Sound with the picture: 20 ms of 48 kHz stereo.
+    let sound = |rate, channels, len| ScreenAudio {
+        rate,
+        channels,
+        data: vec![1; len],
+    };
+    phone.screen.audio(pc_id, &sound(48_000, 2, 3_840)).unwrap();
+    assert_eq!(pc.next().await, Call::Audio(48_000, 2, 3_840));
+    // Half a sample, a silly rate, too much at once: refused.
+    assert!(phone.screen.audio(pc_id, &sound(48_000, 2, 3_841)).is_err());
+    assert!(phone.screen.audio(pc_id, &sound(1_000, 2, 4)).is_err());
+    assert!(
+        phone
+            .screen
+            .audio(pc_id, &sound(48_000, 2, 1 << 20))
+            .is_err()
     );
 
     // Control from the PC: positions are clamped to the screen; nonsense is refused.

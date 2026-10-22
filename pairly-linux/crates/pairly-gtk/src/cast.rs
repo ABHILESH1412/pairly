@@ -9,7 +9,8 @@
 //! - 1 started: `[width u32][height u32][x i32][y i32][w u32][h u32]`, the video size, then
 //!   where the shared monitor is in the desktop (for placing the pointer);
 //! - 2 frame: `[flags u8][H.264 access unit]` (flag 1: key frame);
-//! - 3 stopped: the reason, UTF-8.
+//! - 3 stopped: the reason, UTF-8;
+//! - 4 sound: `[rate u32][channels u8][16-bit samples]`, what the PC is playing (PipeWire).
 //!
 //! It ends when stdin closes (or says `stop`), or the desktop ends the sharing. A `key` line
 //! on stdin asks for a key frame now (the phone's link fell behind and skipped frames).
@@ -28,6 +29,9 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 const STARTED: u8 = 1;
 const FRAME: u8 = 2;
 const STOPPED: u8 = 3;
+const AUDIO: u8 = 4;
+/// What the speakers play, as plain 16-bit stereo.
+const AUDIO_RATE: u32 = 48_000;
 
 /// The video's longer side at most (phones decode 1080p easily).
 const MAX_WIDTH: u32 = 1920;
@@ -255,6 +259,7 @@ fn attach(pipeline: &gstreamer::Pipeline, w: u32, h: u32, position: (i32, i32), 
     started.extend_from_slice(&u32::try_from(size.0).unwrap_or(0).to_be_bytes());
     started.extend_from_slice(&u32::try_from(size.1).unwrap_or(0).to_be_bytes());
     send(STARTED, &started);
+    start_audio();
 
     sink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
@@ -273,6 +278,56 @@ fn attach(pipeline: &gstreamer::Pipeline, w: u32, h: u32, position: (i32, i32), 
             })
             .build(),
     );
+}
+
+/// Record what this PC plays (the default output's monitor) alongside the picture. Without
+/// PipeWire the picture goes on alone.
+fn start_audio() {
+    let description = format!(
+        "pipewiresrc stream-properties=\"props,stream.capture.sink=true\" \
+         ! audioconvert ! audioresample \
+         ! audio/x-raw,format=S16LE,layout=interleaved,rate={AUDIO_RATE},channels=2 \
+         ! appsink name=sound emit-signals=true sync=false max-buffers=8 drop=true"
+    );
+    let pipeline = match launch(&description) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("pairly-gtk --cast: no sound: {e}");
+            return;
+        }
+    };
+    let Some(sink) = pipeline
+        .by_name("sound")
+        .and_then(|e| e.downcast::<gstreamer_app::AppSink>().ok())
+    else {
+        return;
+    };
+    sink.set_callbacks(
+        gstreamer_app::AppSinkCallbacks::builder()
+            .new_sample(|sink| {
+                let sample = sink.pull_sample().map_err(|_| gstreamer::FlowError::Eos)?;
+                if let Some(buffer) = sample.buffer()
+                    && let Ok(map) = buffer.map_readable()
+                {
+                    // Whole stereo samples, at most 16 KB a message.
+                    for chunk in map.chunks(16 * 1024 / 4 * 4) {
+                        let mut payload = Vec::with_capacity(5 + chunk.len());
+                        payload.extend_from_slice(&AUDIO_RATE.to_be_bytes());
+                        payload.push(2);
+                        payload.extend_from_slice(chunk);
+                        send(AUDIO, &payload);
+                    }
+                }
+                Ok(gstreamer::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    if pipeline.set_state(gstreamer::State::Playing).is_err() {
+        eprintln!("pairly-gtk --cast: the sound recording didn't start");
+        return;
+    }
+    // Lives as long as the recorder.
+    std::mem::forget(pipeline);
 }
 
 /// Ask the ScreenCast portal for one monitor (with the cursor), remembering the choice.

@@ -1,5 +1,7 @@
 //! The Wayland clipboard through wl-clipboard (`wl-copy` / `wl-paste`), which works on every
-//! compositor with the data-control protocol (Hyprland, Sway, KDE; not GNOME).
+//! compositor with the data-control protocol (Hyprland, Sway, KDE; not GNOME). Text, and
+//! images (a screenshot, an image copied in the browser, an image file copied in the file
+//! manager).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -37,12 +39,40 @@ fn command(program: &str) -> Option<Command> {
     Some(cmd)
 }
 
+/// What was copied.
+pub enum Content {
+    Text(String),
+    /// (MIME type, bytes).
+    Image(String, Vec<u8>),
+}
+
+/// Image types sent, best first.
+const IMAGE_TYPES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+];
+
 /// Put text on the clipboard. `wl-copy` forks and keeps serving it in the background.
 pub fn set(text: &str) {
+    copy(None, text.as_bytes());
+}
+
+/// Put an image on the clipboard.
+pub fn set_image(mime: &str, data: &[u8]) {
+    copy(Some(mime), data);
+}
+
+fn copy(mime: Option<&str>, data: &[u8]) {
     let Some(mut cmd) = command("wl-copy") else {
         warn!("no Wayland display; can't set the clipboard");
         return;
     };
+    if let Some(mime) = mime {
+        cmd.args(["--type", mime]);
+    }
     let spawned = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -51,7 +81,7 @@ pub fn set(text: &str) {
     match spawned {
         Ok(mut child) => {
             if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
+                let _ = stdin.write_all(data);
             }
             std::thread::spawn(move || child.wait());
         }
@@ -59,16 +89,68 @@ pub fn set(text: &str) {
     }
 }
 
-/// The clipboard's text, unless it's empty, not text, or marked as a secret.
-pub async fn read() -> Option<String> {
+/// What the clipboard holds: the picture when one image file was copied (file managers offer
+/// its path as text too), else text when there is any (a spreadsheet's cells come with a
+/// picture of them too), else an image. Nothing when it's empty or marked as a secret.
+pub async fn read_any() -> Option<Content> {
     let types = tokio::process::Command::from(command("wl-paste")?)
         .arg("--list-types")
         .output()
         .await
         .ok()?;
-    if !types.status.success() || String::from_utf8_lossy(&types.stdout).contains(SECRET_HINT) {
+    let types = String::from_utf8_lossy(&types.stdout).into_owned();
+    if types.contains(SECRET_HINT) {
         return None;
     }
+    let offered: Vec<&str> = types.lines().map(str::trim).collect();
+    if offered.contains(&"text/uri-list")
+        && let Some(image) = copied_image_file().await
+    {
+        return Some(image);
+    }
+    let text = offered
+        .iter()
+        .any(|t| t.starts_with("text/plain") || ["UTF8_STRING", "STRING", "TEXT"].contains(t));
+    if !text && let Some(mime) = IMAGE_TYPES.iter().find(|m| offered.contains(m)) {
+        let out = tokio::process::Command::from(command("wl-paste")?)
+            .args(["--type", mime])
+            .output()
+            .await
+            .ok()?;
+        let fits = out.stdout.len() <= pairly_plugins::clipboard::MAX_IMAGE_BYTES;
+        return (out.status.success() && !out.stdout.is_empty() && fits)
+            .then(|| Content::Image((*mime).to_owned(), out.stdout));
+    }
+    read_text().await.map(Content::Text)
+}
+
+/// The picture in the one copied file, when it's an image.
+async fn copied_image_file() -> Option<Content> {
+    let out = tokio::process::Command::from(command("wl-paste")?)
+        .args(["--no-newline", "--type", "text/uri-list"])
+        .output()
+        .await
+        .ok()?;
+    let list = String::from_utf8(out.stdout).ok()?;
+    let mut uris = list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'));
+    let (Some(uri), None) = (uris.next(), uris.next()) else {
+        return None;
+    };
+    let path = crate::media::file_url_path(uri)?;
+    let size = tokio::fs::metadata(&path).await.ok()?.len();
+    if !(1..=pairly_plugins::clipboard::MAX_IMAGE_BYTES as u64).contains(&size) {
+        return None;
+    }
+    let data = tokio::fs::read(&path).await.ok()?;
+    let mime = pairly_plugins::clipboard::image_type(&data)?;
+    debug!(file = %path.display(), mime, "a copied image file");
+    Some(Content::Image(mime.to_owned(), data))
+}
+
+async fn read_text() -> Option<String> {
     let out = tokio::process::Command::from(command("wl-paste")?)
         .args(["--no-newline", "--type", "text"])
         .output()
@@ -104,8 +186,10 @@ pub async fn watch(plugin: Arc<ClipboardPlugin>) {
         if let Some(stdout) = child.stdout.take() {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(_)) = lines.next_line().await {
-                if let Some(text) = read().await {
-                    plugin.local_changed(&text);
+                match read_any().await {
+                    Some(Content::Text(text)) => plugin.local_changed(&text),
+                    Some(Content::Image(mime, data)) => plugin.local_image_changed(&mime, &data),
+                    None => {}
                 }
             }
         }

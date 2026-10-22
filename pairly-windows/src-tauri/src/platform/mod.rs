@@ -5,8 +5,11 @@ pub mod bluetooth;
 pub mod capture;
 pub mod clipboard;
 pub mod input;
+pub mod keyhook;
 pub mod listener;
+pub mod loopback;
 pub mod media;
+pub mod network;
 pub mod toast;
 
 use pairly_plugins::battery::BatteryState;

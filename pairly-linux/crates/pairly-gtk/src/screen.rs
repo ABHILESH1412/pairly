@@ -5,14 +5,20 @@
 //! messages `[kind u8][length u32 BE][payload]`:
 //! - 1 started: `[width u32][height u32]`;
 //! - 2 frame: `[flags u8][H.264 access unit]` (flag 1: key frame);
-//! - 3 stopped: the reason, UTF-8.
+//! - 3 stopped: the reason, UTF-8;
+//! - 4 sound: `[rate u32][channels u8][16-bit samples]`, played as it comes.
 //!
 //! What you do in the window goes back on stdout, one line each (positions are fractions of
 //! the video). A phone gets touches: `tap x y`, `long x y`, `swipe <ms> x1 y1 x2 y2 …`,
 //! `key back|home|recents|enter|backspace`, `text <text>`. A PC gets the mouse and keyboard:
-//! `move x y`, `button left|right|middle press|release x y`, `wheel dx dy` and
-//! `combo <ctrl+alt+shift+super or -> [key <name>|text <text>]`. Then `stop`. Closing the
-//! window ends the stream.
+//! `move x y`, `button left|right|middle press|release x y`, `wheel dx dy`,
+//! `combo <ctrl+alt+shift+super or -> [key <name>|text <text>]` and, in Control mode,
+//! `gesture <fingers> left|right|up|down`. Then `stop`. Closing the window ends the stream.
+//!
+//! Control mode (another PC): this desktop's own shortcuts and touchpad gestures (Super+E,
+//! Alt+Tab, a 4-finger swipe…) go to the other PC too. It's on while the toggle is, or while
+//! the window is full screen, and only while the window has focus; Ctrl+Alt pressed and
+//! released on their own turns it off.
 //!
 //! Video is decoded by GStreamer (hardware decoding when the GPU has it) into a GTK picture.
 
@@ -31,6 +37,38 @@ const LONG_PRESS_MS: u128 = 500;
 const TAP_SLOP: f64 = 8.0;
 /// Most points kept for one swipe.
 const MAX_POINTS: usize = 120;
+/// A touchpad swipe shorter than this (pixels) isn't a gesture.
+const SWIPE_DISTANCE: f64 = 80.0;
+
+/// Control mode: every shortcut and gesture goes to the other PC.
+struct Control {
+    on: Cell<bool>,
+    window: adw::Window,
+    toggle: gtk::ToggleButton,
+    banner: adw::Banner,
+}
+
+impl Control {
+    fn set(&self, on: bool) {
+        if self.on.replace(on) == on {
+            return;
+        }
+        self.toggle.set_active(on);
+        self.banner.set_revealed(on);
+        // Asks the desktop to pass its own shortcuts (and, on Hyprland, its gestures) to
+        // this window while it has focus.
+        if let Some(toplevel) = self.window.surface().and_downcast::<gtk::gdk::Toplevel>() {
+            if on {
+                toplevel.inhibit_system_shortcuts(None::<&gtk::gdk::Event>);
+            } else {
+                toplevel.restore_system_shortcuts();
+            }
+        }
+        if !on && self.window.is_fullscreen() {
+            self.window.unfullscreen();
+        }
+    }
+}
 
 enum Msg {
     Started(u32, u32),
@@ -138,6 +176,33 @@ pub fn run(title: &str, pc: bool) {
     }
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
+    // Control mode and full screen (another PC only).
+    let control_toggle = gtk::ToggleButton::builder()
+        .icon_name("input-keyboard-symbolic")
+        .tooltip_text(
+            "Control Mode: every shortcut and gesture goes to this PC (Ctrl+Alt to release)",
+        )
+        .focusable(false)
+        .focus_on_click(false)
+        .build();
+    let fullscreen = gtk::Button::builder()
+        .icon_name("view-fullscreen-symbolic")
+        .tooltip_text("Full Screen (Control Mode on)")
+        .focusable(false)
+        .focus_on_click(false)
+        .build();
+    let banner = adw::Banner::builder()
+        .title(format!(
+            "Controlling {title}: every shortcut and gesture goes there. Ctrl+Alt gives them back."
+        ))
+        .button_label("Release")
+        .revealed(false)
+        .build();
+    if pc {
+        header.pack_end(&fullscreen);
+        header.pack_end(&control_toggle);
+        view.add_top_bar(&banner);
+    }
     view.set_content(Some(&stack));
     let (width, height) = if pc { (1280, 800) } else { (420, 880) };
     let window = adw::Window::builder()
@@ -153,7 +218,30 @@ pub fn run(title: &str, pc: bool) {
     // The video's size, for mapping the pointer onto it.
     let video = Rc::new(Cell::new((0_u32, 0_u32)));
     if pc {
-        connect_pc_input(&picture, &window, &video);
+        let control = Rc::new(Control {
+            on: Cell::new(false),
+            window: window.clone(),
+            toggle: control_toggle.clone(),
+            banner: banner.clone(),
+        });
+        control_toggle.connect_toggled({
+            let control = control.clone();
+            move |t| control.set(t.is_active())
+        });
+        banner.connect_button_clicked({
+            let control = control.clone();
+            move |_| control.set(false)
+        });
+        fullscreen.connect_clicked({
+            let window = window.clone();
+            move |_| window.fullscreen()
+        });
+        // Full screen means working on the other PC: Control mode with it.
+        window.connect_fullscreened_notify({
+            let control = control.clone();
+            move |w| control.set(w.is_fullscreen())
+        });
+        connect_pc_input(&picture, &window, &video, &control);
     } else {
         connect_input(&picture, &window, &video);
     }
@@ -225,6 +313,7 @@ pub fn run(title: &str, pc: bool) {
 fn read_stream(src: &gstreamer_app::AppSrc, tx: &relm4::Sender<Msg>) {
     let mut stdin = std::io::stdin().lock();
     let mut head = [0_u8; 5];
+    let mut sound: Option<Sound> = None;
     while stdin.read_exact(&mut head).is_ok() {
         let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
         if len > 4 * 1024 * 1024 {
@@ -255,11 +344,64 @@ fn read_stream(src: &gstreamer_app::AppSrc, tx: &relm4::Sender<Msg>) {
                 tx.send(Msg::Stopped(String::from_utf8_lossy(&body).into_owned()))
                     .ok();
             }
+            4 if body.len() > 5 => {
+                let rate = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+                let channels = body[4];
+                if sound
+                    .as_ref()
+                    .is_none_or(|s| (s.rate, s.channels) != (rate, channels))
+                {
+                    sound = Sound::new(rate, channels);
+                }
+                if let Some(s) = &sound {
+                    let _ = s
+                        .src
+                        .push_buffer(gstreamer::Buffer::from_mut_slice(body.split_off(5)));
+                }
+            }
             _ => {}
         }
     }
+    if let Some(s) = sound {
+        let _ = s.pipeline.set_state(gstreamer::State::Null);
+    }
     let _ = src.end_of_stream();
     tx.send(Msg::Stopped("the connection closed".into())).ok();
+}
+
+/// The shared device's sound, played as it arrives: a short queue that drops the oldest when
+/// it falls behind, so the sound stays with the picture.
+struct Sound {
+    rate: u32,
+    channels: u8,
+    src: gstreamer_app::AppSrc,
+    pipeline: gstreamer::Pipeline,
+}
+
+impl Sound {
+    fn new(rate: u32, channels: u8) -> Option<Self> {
+        let description = format!(
+            "appsrc name=sound is-live=true format=time do-timestamp=true \
+               caps=audio/x-raw,format=S16LE,layout=interleaved,rate={rate},channels={channels} \
+             ! queue max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 leaky=downstream \
+             ! audioconvert ! audioresample ! autoaudiosink sync=false"
+        );
+        let pipeline = gstreamer::parse::launch(&description)
+            .ok()?
+            .downcast::<gstreamer::Pipeline>()
+            .ok()?;
+        let src = pipeline
+            .by_name("sound")?
+            .downcast::<gstreamer_app::AppSrc>()
+            .ok()?;
+        pipeline.set_state(gstreamer::State::Playing).ok()?;
+        Some(Self {
+            rate,
+            channels,
+            src,
+            pipeline,
+        })
+    }
 }
 
 /// Where `(x, y)` in the picture falls on the video, as fractions (beyond 0–1 outside it);
@@ -476,7 +618,12 @@ type HeldButton = (&'static str, (f64, f64));
 
 /// Another PC: the pointer, its buttons, the wheel and the keyboard (shortcuts included) go
 /// there as they are.
-fn connect_pc_input(picture: &gtk::Picture, window: &adw::Window, video: &Rc<Cell<(u32, u32)>>) {
+fn connect_pc_input(
+    picture: &gtk::Picture,
+    window: &adw::Window,
+    video: &Rc<Cell<(u32, u32)>>,
+    control: &Rc<Control>,
+) {
     // On the video, held to its edges (a drag may go past them).
     let point = {
         let (picture, video) = (picture.clone(), video.clone());
@@ -557,12 +704,14 @@ fn connect_pc_input(picture: &gtk::Picture, window: &adw::Window, video: &Rc<Cel
     // Keys go over as they're pressed. The Super key alone (pressed and let go with nothing in
     // between) opens the Start menu or overview there. Captured before any widget sees them.
     let lone_super = Rc::new(Cell::new(false));
+    let release = Rc::new(RefCell::new(CtrlAlt::default()));
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     keys.connect_key_pressed({
-        let lone_super = lone_super.clone();
+        let (lone_super, release) = (lone_super.clone(), release.clone());
         move |_, key, _, state| {
             use gtk::gdk::Key;
+            release.borrow_mut().pressed(key);
             let is_super = matches!(key, Key::Super_L | Key::Super_R);
             lone_super.set(is_super);
             let modifier = matches!(
@@ -588,11 +737,154 @@ fn connect_pc_input(picture: &gtk::Picture, window: &adw::Window, video: &Rc<Cel
             gtk::glib::Propagation::Stop
         }
     });
-    keys.connect_key_released(move |_, key, _, _| {
-        use gtk::gdk::Key;
-        if matches!(key, Key::Super_L | Key::Super_R) && lone_super.replace(false) {
-            emit("combo super");
+    keys.connect_key_released({
+        let control = control.clone();
+        move |_, key, _, _| {
+            use gtk::gdk::Key;
+            if matches!(key, Key::Super_L | Key::Super_R) && lone_super.replace(false) {
+                emit("combo super");
+            }
+            // Ctrl+Alt on their own: out of Control mode (Ctrl+Alt+anything goes there).
+            if release.borrow_mut().released(key) && control.on.get() {
+                control.set(false);
+            }
         }
     });
     window.add_controller(keys);
+
+    // Touchpad swipes with several fingers, in Control mode (the desktop leaves them to this
+    // window then): one gesture each, by where the fingers went.
+    let swipe = Rc::new(Cell::new((0_u32, 0.0_f64, 0.0_f64)));
+    let gestures = gtk::EventControllerLegacy::new();
+    gestures.connect_event({
+        let control = control.clone();
+        move |_, event| {
+            use gtk::gdk::TouchpadGesturePhase as Phase;
+            let Some(event) = event.downcast_ref::<gtk::gdk::TouchpadEvent>() else {
+                return gtk::glib::Propagation::Proceed;
+            };
+            if event.event_type() != gtk::gdk::EventType::TouchpadSwipe {
+                return gtk::glib::Propagation::Proceed;
+            }
+            let (fingers, x, y) = swipe.get();
+            match event.gesture_phase() {
+                Phase::Begin => swipe.set((event.n_fingers(), 0.0, 0.0)),
+                Phase::Update => {
+                    let (dx, dy) = event.deltas();
+                    swipe.set((fingers, x + dx, y + dy));
+                }
+                Phase::End => {
+                    if let Some(line) = gesture_line(fingers, x, y)
+                        && control.on.get()
+                    {
+                        emit(&line);
+                    }
+                    swipe.set((0, 0.0, 0.0));
+                }
+                _ => swipe.set((0, 0.0, 0.0)),
+            }
+            gtk::glib::Propagation::Stop
+        }
+    });
+    window.add_controller(gestures);
+}
+
+/// A finished touchpad swipe as a line for pairlyd: 3 or more fingers, far enough.
+fn gesture_line(fingers: u32, dx: f64, dy: f64) -> Option<String> {
+    if fingers < 3 || dx.hypot(dy) < SWIPE_DISTANCE {
+        return None;
+    }
+    let direction = if dx.abs() >= dy.abs() {
+        if dx < 0.0 { "left" } else { "right" }
+    } else if dy < 0.0 {
+        "up"
+    } else {
+        "down"
+    };
+    Some(format!("gesture {} {direction}", fingers.min(5)))
+}
+
+/// Ctrl and Alt pressed together and let go with no other key in between.
+#[derive(Default)]
+struct CtrlAlt {
+    ctrl: bool,
+    alt: bool,
+    both: bool,
+    other: bool,
+}
+
+impl CtrlAlt {
+    fn pressed(&mut self, key: gtk::gdk::Key) {
+        use gtk::gdk::Key;
+        match key {
+            Key::Control_L | Key::Control_R => self.ctrl = true,
+            Key::Alt_L | Key::Alt_R => self.alt = true,
+            _ => self.other = true,
+        }
+        if self.ctrl && self.alt {
+            self.both = true;
+        }
+    }
+
+    /// Whether this release completes a lone Ctrl+Alt.
+    fn released(&mut self, key: gtk::gdk::Key) -> bool {
+        use gtk::gdk::Key;
+        match key {
+            Key::Control_L | Key::Control_R => self.ctrl = false,
+            Key::Alt_L | Key::Alt_R => self.alt = false,
+            _ => return false,
+        }
+        if self.ctrl || self.alt {
+            return false;
+        }
+        let lone = self.both && !self.other;
+        *self = Self::default();
+        lone
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gtk::gdk::Key;
+
+    #[test]
+    fn ctrl_alt_alone_releases_but_ctrl_alt_t_doesnt() {
+        let mut c = CtrlAlt::default();
+        c.pressed(Key::Control_L);
+        c.pressed(Key::Alt_L);
+        assert!(!c.released(Key::Alt_L), "Ctrl still held");
+        assert!(
+            c.released(Key::Control_L),
+            "both let go, nothing else pressed"
+        );
+
+        // Ctrl+Alt+T: a shortcut for the other PC.
+        c.pressed(Key::Control_L);
+        c.pressed(Key::Alt_L);
+        c.pressed(Key::t);
+        assert!(!c.released(Key::t));
+        assert!(!c.released(Key::Alt_L));
+        assert!(!c.released(Key::Control_L));
+
+        // Ctrl alone, or Alt alone: nothing.
+        c.pressed(Key::Control_L);
+        assert!(!c.released(Key::Control_L));
+        c.pressed(Key::Alt_R);
+        assert!(!c.released(Key::Alt_R));
+    }
+
+    #[test]
+    fn swipes_become_gestures() {
+        assert_eq!(
+            gesture_line(4, -200.0, 10.0).as_deref(),
+            Some("gesture 4 left")
+        );
+        assert_eq!(
+            gesture_line(3, 5.0, -150.0).as_deref(),
+            Some("gesture 3 up")
+        );
+        assert_eq!(gesture_line(2, -200.0, 0.0), None, "two fingers scroll");
+        assert_eq!(gesture_line(4, -20.0, 5.0), None, "too short");
+    }
 }

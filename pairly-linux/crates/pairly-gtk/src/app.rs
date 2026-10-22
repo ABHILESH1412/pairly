@@ -75,6 +75,10 @@ pub enum Input {
     OpenFiles(String),
     /// Watch and control a phone's screen.
     ShowScreen(String),
+    /// Use a phone's camera as this PC's webcam, or stop.
+    AskWebcam(String),
+    /// (device, on, back camera).
+    Webcam(String, bool, bool),
     /// Lock a phone, or power it off / restart it: (device, "lock" | "poweroff" | "restart").
     Power(String, &'static str),
     /// Ask whether to power off or restart a phone.
@@ -119,6 +123,10 @@ pub enum Cmd {
     PlayersChanged(String),
     Players(String, Vec<Player>),
     Failed(String),
+    /// Whether a phone films for this PC: offer to start or stop.
+    WebcamOn(String, bool),
+    /// Why the webcam can't start (long: the setup steps), shown in a dialog.
+    WebcamFailed(String),
     /// The daemon runs a different version (it updated itself): offer to restart the app.
     NewVersion(String),
     Done,
@@ -744,6 +752,35 @@ impl Component for App {
                 );
                 Self::toast(widgets, &format!("Asking {name} to share its screen…"));
             }
+            Input::AskWebcam(id) => {
+                if let Some(daemon) = self.daemon.clone() {
+                    sender.oneshot_command(async move {
+                        match daemon.webcam_on(&id).await {
+                            Ok(on) => Cmd::WebcamOn(id, on),
+                            Err(e) => Cmd::Failed(describe(&e)),
+                        }
+                    });
+                }
+                return;
+            }
+            Input::Webcam(id, on, back) => {
+                let name = self.name_of(&id);
+                if let Some(daemon) = self.daemon.clone() {
+                    sender.oneshot_command(async move {
+                        match daemon.webcam(&id, on, back).await {
+                            Ok(()) => Cmd::Done,
+                            Err(e) => Cmd::WebcamFailed(describe(&e)),
+                        }
+                    });
+                }
+                let text = if on {
+                    format!("Asking {name} for its camera…")
+                } else {
+                    format!("Stopped {name}'s camera")
+                };
+                Self::toast(widgets, &text);
+                return;
+            }
             Input::OpenFiles(id) => {
                 if let Some(daemon) = self.daemon.clone() {
                     let name = self.name_of(&id);
@@ -1002,6 +1039,51 @@ impl Component for App {
             }
             Cmd::Failed(e) => {
                 Self::toast(widgets, &e);
+                return;
+            }
+            Cmd::WebcamOn(id, on) => {
+                let name = self.name_of(&id);
+                let dialog = if on {
+                    let d = adw::AlertDialog::new(
+                        Some(&format!("Stop Using {name}'s Camera?")),
+                        Some("Video apps will lose the Pairly Camera."),
+                    );
+                    d.add_responses(&[("cancel", "Cancel"), ("stop", "Stop")]);
+                    d.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+                    d
+                } else {
+                    let d = adw::AlertDialog::new(
+                        Some(&format!("Use {name} as a Webcam?")),
+                        Some(
+                            "Its camera shows up as “Pairly Camera” in browsers, Zoom, OBS and \
+                             other video apps. Both devices must be on the same Wi-Fi.",
+                        ),
+                    );
+                    d.add_responses(&[
+                        ("cancel", "Cancel"),
+                        ("back", "Back Camera"),
+                        ("front", "Front Camera"),
+                    ]);
+                    d.set_response_appearance("front", adw::ResponseAppearance::Suggested);
+                    d
+                };
+                dialog.set_close_response("cancel");
+                dialog.connect_response(None, move |_, response| {
+                    let (on, back) = match response {
+                        "stop" => (false, false),
+                        "front" => (true, false),
+                        "back" => (true, true),
+                        _ => return,
+                    };
+                    sender.input(Input::Webcam(id.clone(), on, back));
+                });
+                dialog.present(Some(window));
+                return;
+            }
+            Cmd::WebcamFailed(e) => {
+                let dialog = adw::AlertDialog::new(Some("Can't Use the Phone's Camera"), Some(&e));
+                dialog.add_response("ok", "OK");
+                dialog.present(Some(window));
                 return;
             }
             Cmd::NewVersion(version) => {
@@ -1412,6 +1494,15 @@ fn device_page(
                 on,
                 sender,
                 with(Input::OpenFiles),
+            ));
+            tiles.push(tile(
+                "camera-web-symbolic",
+                "Webcam",
+                "Its camera on this PC",
+                "purple",
+                on,
+                sender,
+                with(Input::AskWebcam),
             ));
         }
         if matches!(d.device_type.as_str(), "desktop" | "laptop") {

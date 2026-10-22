@@ -79,6 +79,7 @@ object PcScreenSession {
         data class Started(val width: Int, val height: Int) : Event
         class Frame(val data: ByteArray, val key: Boolean) : Event
         data class Stopped(val reason: String) : Event
+        class Audio(val rate: Int, val channels: Int, val data: ByteArray) : Event
     }
 
     @Volatile
@@ -145,6 +146,53 @@ class PcScreenActivity : ComponentActivity() {
                     .putExtra(EXTRA_NAME, name),
             )
         }
+    }
+}
+
+/** The PC's sound, played as it comes (never waiting: late sound is dropped, not queued). */
+private class Speaker {
+    private var track: android.media.AudioTrack? = null
+    private var format: Pair<Int, Int>? = null
+
+    @Synchronized
+    fun play(rate: Int, channels: Int, data: ByteArray) {
+        if (format != rate to channels) {
+            stop()
+            format = rate to channels
+            val mask = if (channels == 1) android.media.AudioFormat.CHANNEL_OUT_MONO else android.media.AudioFormat.CHANNEL_OUT_STEREO
+            val min = android.media.AudioTrack.getMinBufferSize(rate, mask, android.media.AudioFormat.ENCODING_PCM_16BIT)
+            track = runCatching {
+                android.media.AudioTrack.Builder()
+                    .setAudioAttributes(
+                        android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
+                            .build(),
+                    )
+                    .setAudioFormat(
+                        android.media.AudioFormat.Builder()
+                            .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(rate)
+                            .setChannelMask(mask)
+                            .build(),
+                    )
+                    .setBufferSizeInBytes(maxOf(min, rate * channels * 2 / 5))
+                    .setTransferMode(android.media.AudioTrack.MODE_STREAM)
+                    .build()
+                    .apply { play() }
+            }.getOrNull()
+        }
+        track?.write(data, 0, data.size, android.media.AudioTrack.WRITE_NON_BLOCKING)
+    }
+
+    @Synchronized
+    fun stop() {
+        track?.let {
+            runCatching { it.stop() }
+            it.release()
+        }
+        track = null
+        format = null
     }
 }
 
@@ -297,6 +345,7 @@ private fun PcScreen(device: String, name: String, onRotate: () -> Unit) {
         decoderHolder[0] = null
     }
 
+    val sound = remember { Speaker() }
     DisposableEffect(device) {
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         PcScreenSession.watch(device) { event ->
@@ -311,12 +360,15 @@ private fun PcScreen(device: String, name: String, onRotate: () -> Unit) {
                 is PcScreenSession.Event.Stopped -> main.post {
                     status = event.reason
                     stopDecoder()
+                    sound.stop()
                 }
+                is PcScreenSession.Event.Audio -> sound.play(event.rate, event.channels, event.data)
             }
         }
         onDispose {
             PcScreenSession.unwatch()
             stopDecoder()
+            sound.stop()
         }
     }
 

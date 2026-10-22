@@ -588,7 +588,8 @@ impl TryFrom<pairly_plugins::screen::ScreenInput> for ScreenInputData {
             ScreenInput::Pointer { .. }
             | ScreenInput::Button { .. }
             | ScreenInput::Wheel { .. }
-            | ScreenInput::Combo { .. } => return Err(()),
+            | ScreenInput::Combo { .. }
+            | ScreenInput::Gesture { .. } => return Err(()),
         })
     }
 }
@@ -611,9 +612,50 @@ pub trait ScreenHandler: Send + Sync {
     fn viewer_frame(&self, device_id: String, data: Vec<u8>, key: bool);
     /// The PC's stream ended (or was refused), and why.
     fn viewer_stopped(&self, device_id: String, reason: String);
+    /// The PC's sound: 16-bit little-endian samples, channels interleaved.
+    fn viewer_audio(&self, device_id: String, rate: u32, channels: u8, data: Vec<u8>);
 }
 
 pub(crate) struct ForeignScreen(pub Arc<dyn ScreenHandler>);
+
+// ----- the camera as the PC's webcam -------------------------------------------------------
+
+/// Implemented in Kotlin: a PC wants this phone's camera as its webcam.
+#[uniffi::export(with_foreign)]
+pub trait CameraHandler: Send + Sync {
+    /// Ask the user (`back`: the back camera, else the front); once filming, call
+    /// `Node::camera_started`.
+    fn start_camera(
+        &self,
+        device_id: String,
+        device_name: String,
+        back: bool,
+    ) -> Result<(), PairlyError>;
+    fn stop_camera(&self, device_id: String);
+}
+
+pub(crate) struct ForeignCamera(pub Arc<dyn CameraHandler>);
+
+impl pairly_plugins::camera::CameraHost for ForeignCamera {
+    fn start_camera(
+        &self,
+        from: &pairly_core::PeerInfo,
+        facing: pairly_plugins::camera::Facing,
+    ) -> Result<(), String> {
+        let back = facing == pairly_plugins::camera::Facing::Back;
+        self.0
+            .start_camera(from.id.to_string(), from.name.clone(), back)
+            .map_err(|e| e.to_string())
+    }
+
+    fn stop_camera(&self, from: &pairly_core::PeerInfo) {
+        self.0.stop_camera(from.id.to_string());
+    }
+
+    fn disconnected(&self, peer: pairly_core::DeviceId) {
+        self.0.stop_camera(peer.to_string());
+    }
+}
 
 impl pairly_plugins::screen::ScreenHost for ForeignScreen {
     fn start_sharing(&self, from: &pairly_core::PeerInfo) -> Result<(), String> {
@@ -645,6 +687,11 @@ impl pairly_plugins::screen::ScreenHost for ForeignScreen {
     fn frame(&self, from: &pairly_core::PeerInfo, frame: pairly_plugins::screen::ScreenFrame) {
         self.0
             .viewer_frame(from.id.to_string(), frame.data, frame.key || frame.config);
+    }
+
+    fn audio(&self, from: &pairly_core::PeerInfo, audio: pairly_plugins::screen::ScreenAudio) {
+        self.0
+            .viewer_audio(from.id.to_string(), audio.rate, audio.channels, audio.data);
     }
 
     fn stopped(&self, from: &pairly_core::PeerInfo, reason: &str) {

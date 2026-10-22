@@ -245,6 +245,8 @@ enum Next {
 enum Role {
     Reader,
     Writer,
+    /// Neither task: a check from outside ([`Session::probe`]).
+    Outside,
 }
 
 pub struct Session {
@@ -337,9 +339,13 @@ impl Session {
         } = channel;
         let reader =
             tokio::spawn(reader_loop(self.shared.clone(), reader, generation)).abort_handle();
-        let writer =
-            tokio::spawn(writer_loop(self.shared.clone(), writer, generation, transport))
-                .abort_handle();
+        let writer = tokio::spawn(writer_loop(
+            self.shared.clone(),
+            writer,
+            generation,
+            transport,
+        ))
+        .abort_handle();
         st.link = Some(Link {
             transport,
             locally_initiated: initiator,
@@ -377,6 +383,54 @@ impl Session {
             link.reader.abort();
             link.writer.abort();
         }
+    }
+
+    /// Check that the live channel still answers: a keepalive now, and anything heard back
+    /// within `timeout`. A channel that stays silent is dropped (as its keepalive timeout would,
+    /// only much sooner), so the device reconnects over whatever still works. For when the
+    /// network changed, or a slower link arrives while a faster one looks alive. Returns
+    /// whether it answered.
+    pub async fn probe(&self, timeout: Duration) -> bool {
+        let sent = Instant::now();
+        let generation = {
+            let mut st = self.shared.lock();
+            if st.link.is_none() {
+                return false;
+            }
+            let t = self.shared.now_ms();
+            if let Some(env) = st.control(&Keepalive { t }) {
+                st.queues[Priority::Control as usize].push_back(env);
+            }
+            st.generation
+        };
+        self.shared.wake.notify_one();
+        let deadline = sent + timeout;
+        loop {
+            {
+                let st = self.shared.lock();
+                if st.generation != generation {
+                    // Replaced meanwhile: whatever is there now is fresh.
+                    return st.link.is_some();
+                }
+                match st.link.as_ref() {
+                    None => return false,
+                    Some(link) if link.last_rx > sent => return true,
+                    Some(_) => {}
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        link_lost(
+            &self.shared,
+            generation,
+            "no answer to a check".to_owned(),
+            Role::Outside,
+        )
+        .await;
+        false
     }
 
     /// Queue a packet. Returns its id, or `None` if it was unreliable and was dropped (no
@@ -607,10 +661,12 @@ fn next_outbound(shared: &Shared, generation: u64) -> Next {
             return Next::Send(env);
         }
     }
-    let (last_rx, timeout) = st.link.as_ref().map_or(
-        (now, shared.config.keepalive_timeout),
-        |l| (l.last_rx, l.keepalive_timeout),
-    );
+    let (last_rx, timeout) = st
+        .link
+        .as_ref()
+        .map_or((now, shared.config.keepalive_timeout), |l| {
+            (l.last_rx, l.keepalive_timeout)
+        });
     Next::Wait {
         ack_deadline: st.ack_deadline,
         rx_deadline: last_rx + timeout,
@@ -628,6 +684,10 @@ async fn link_lost(shared: &Shared, generation: u64, reason: String, role: Role)
         match role {
             Role::Reader => link.writer.abort(),
             Role::Writer => link.reader.abort(),
+            Role::Outside => {
+                link.reader.abort();
+                link.writer.abort();
+            }
         }
     }
     debug!(peer = %shared.peer, generation, %reason, "channel lost");
@@ -943,6 +1003,9 @@ mod tests {
         let _ = next(&mut p.a_events).await; // Connected
         assert_quiet(&mut p.a_events).await;
         assert!(p.a.is_connected(), "a quiet relay link isn't dropped early");
-        assert!(p.a.rtt().is_none(), "no keepalive sent within the relay interval");
+        assert!(
+            p.a.rtt().is_none(),
+            "no keepalive sent within the relay interval"
+        );
     }
 }

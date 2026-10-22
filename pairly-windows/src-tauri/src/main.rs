@@ -370,6 +370,41 @@ fn screen_watch(
     backend.screens.watch(peer, channel).map_err(text)
 }
 
+/// Control mode in a viewer: Windows' own shortcuts (the Windows key, Alt+Tab…) go to that
+/// PC while the viewer is in front.
+#[tauri::command]
+async fn screen_control(
+    app: tauri::AppHandle,
+    backend: Backends<'_>,
+    id: String,
+    on: bool,
+) -> Answer {
+    use tauri::Manager;
+    let peer = backend::parse(&id).map_err(text)?;
+    if !on {
+        platform::keyhook::control(None);
+        return Ok(());
+    }
+    let window = app
+        .get_webview_window(&screen::label(peer))
+        .ok_or("the viewer is closed")?;
+    #[cfg(windows)]
+    let handle = window.hwnd().map_err(text)?.0 as isize;
+    #[cfg(not(windows))]
+    let handle = {
+        let _ = window;
+        0
+    };
+    let screens = backend.screens.clone();
+    platform::keyhook::control(Some((
+        handle,
+        Box::new(move |input| {
+            let _ = screens.viewer_input(peer, input);
+        }),
+    )));
+    Ok(())
+}
+
 #[tauri::command]
 fn screen_input(
     backend: Backends<'_>,
@@ -574,6 +609,7 @@ fn main() {
             screen_open,
             screen_watch,
             screen_input,
+            screen_control,
             stop_cast,
         ])
         .run(tauri::generate_context!())

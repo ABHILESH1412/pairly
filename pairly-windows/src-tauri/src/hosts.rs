@@ -14,7 +14,7 @@ use pairly_plugins::input::{InputHost, KeyInput, LaserPointer, PointerButton, Po
 use pairly_plugins::media::{MediaAction, MediaHost, PlayerState};
 use pairly_plugins::notification::{Notification, NotificationHost};
 use pairly_plugins::power::{PowerAction, PowerHost};
-use pairly_plugins::screen::{ScreenFrame, ScreenHost, ScreenInput};
+use pairly_plugins::screen::{ScreenAudio, ScreenFrame, ScreenHost, ScreenInput};
 use pairly_plugins::share::{ShareHost, Transfer, TransferState};
 use pairly_plugins::sms::{Message, SmsHost};
 use pairly_plugins::telephony::{CallEvent, TelephonyHost};
@@ -81,6 +81,10 @@ impl Platform for Host {
 impl ClipboardHost for Host {
     fn set_clipboard(&self, _from: &PeerInfo, text: &str) {
         self.with(|b| b.clipboard.set(text));
+    }
+
+    fn set_clipboard_image(&self, _from: &PeerInfo, mime: &str, data: &[u8]) {
+        self.with(|b| b.clipboard.set_image(mime, data));
     }
 }
 
@@ -501,6 +505,10 @@ impl ScreenHost for Host {
 
     fn frame(&self, from: &PeerInfo, frame: ScreenFrame) {
         self.with(|b| b.screens.viewer_frame(from.id, &frame));
+    }
+
+    fn audio(&self, from: &PeerInfo, audio: ScreenAudio) {
+        self.with(|b| b.screens.viewer_audio(from.id, &audio));
     }
 
     fn stopped(&self, from: &PeerInfo, reason: &str) {

@@ -61,6 +61,10 @@ impl ClipboardHost for LinuxPlatform {
     fn set_clipboard(&self, _from: &PeerInfo, text: &str) {
         crate::clipboard::set(text);
     }
+
+    fn set_clipboard_image(&self, _from: &PeerInfo, mime: &str, data: &[u8]) {
+        crate::clipboard::set_image(mime, data);
+    }
 }
 
 impl BatteryHost for LinuxPlatform {

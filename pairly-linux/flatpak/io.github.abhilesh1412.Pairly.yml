@@ -24,8 +24,9 @@ finish-args:
   - --socket=fallback-x11
   # The GPU for screen sharing's video, and /dev/uinput for remote input on any desktop.
   - --device=all
-  # Find my PC rings through the speakers.
+  # Find my PC rings through the speakers; the shared screen's sound is recorded from them.
   - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0
   # This PC's battery, for the phone.
   - --system-talk-name=org.freedesktop.UPower
   # Bluetooth, when there's no network: BlueZ and its sockets.

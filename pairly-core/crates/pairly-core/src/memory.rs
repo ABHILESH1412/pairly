@@ -1,7 +1,8 @@
 //! In-process transport for tests: transports on the same [`MemoryNetwork`] discover each other
 //! and connect through `tokio::io::duplex` pipes. [`MemoryNetwork::sever`] cuts every live
 //! connection, like a Wi-Fi drop, and [`MemoryNetwork::set_reachable`] takes a device off the
-//! network (or back) entirely, like leaving home.
+//! network (or back) entirely, like leaving home. [`MemoryNetwork::leave_silently`] is leaving
+//! home as it really happens: the device's connections go quiet, and only it knows why.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -30,6 +31,8 @@ pub struct MemoryNetwork {
     links: Arc<Mutex<Vec<AbortHandle>>>,
     /// Addresses currently off the network.
     offline: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Set: every open connection stops passing data without closing.
+    stalled: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl MemoryNetwork {
@@ -49,6 +52,34 @@ impl MemoryNetwork {
         let links = std::mem::take(&mut *self.links.lock().unwrap_or_else(PoisonError::into_inner));
         for link in links {
             link.abort();
+        }
+    }
+
+    /// `address` walks out of range: its open connections go silent (neither end is told),
+    /// new ones fail, and only it loses sight of the others; they still think it's there.
+    pub async fn leave_silently(&self, address: &str) {
+        self.offline
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(address.to_owned());
+        self.stalled.send_replace(true);
+        let endpoints: Vec<(String, Endpoint)> = self
+            .lock()
+            .iter()
+            .map(|(a, e)| (a.clone(), e.clone()))
+            .collect();
+        let Some(me) = endpoints
+            .iter()
+            .find(|(a, _)| a == address)
+            .map(|(_, e)| e.clone())
+        else {
+            return;
+        };
+        for (other, ep) in endpoints.iter().filter(|(a, _)| a != address) {
+            let _ = me
+                .events
+                .send(TransportEvent::Lost(candidate(other, &ep.advert)))
+                .await;
         }
     }
 
@@ -175,8 +206,15 @@ impl Transport for MemoryTransport {
         // Two pipes joined by a relay task, so `sever` can cut the connection from outside.
         let (ours, mut near) = tokio::io::duplex(PIPE_CAPACITY);
         let (mut far, theirs) = tokio::io::duplex(PIPE_CAPACITY);
+        let mut stalled = self.network.stalled.subscribe();
         let relay = tokio::spawn(async move {
-            let _ = tokio::io::copy_bidirectional(&mut near, &mut far).await;
+            tokio::select! {
+                _ = tokio::io::copy_bidirectional(&mut near, &mut far) => {}
+                // Silent from now on: the pipes stay open, nothing more passes.
+                _ = async { stalled.wait_for(|s| *s).await.is_ok() } => {
+                    std::future::pending::<()>().await;
+                }
+            }
         });
         {
             let mut links = self

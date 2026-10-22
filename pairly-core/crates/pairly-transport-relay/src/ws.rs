@@ -37,6 +37,16 @@ use crate::{RETRY_MAX, RETRY_MIN, Rooms, candidate_address, err};
 pub const PING_EVERY: Duration = Duration::from_secs(120);
 /// No answer to a ping in this long: the connection is gone.
 const PONG_WAIT: Duration = Duration::from_secs(20);
+/// After a network change: a connection over the old network won't answer at all.
+const RECHECK_WAIT: Duration = Duration::from_secs(5);
+
+/// Wakes every relay connection to check itself (the network changed).
+static NETWORK_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// The network changed: every relay connection pings now.
+pub(crate) fn network_changed() {
+    NETWORK_CHANGED.notify_waiters();
+}
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A whole call: connecting (TLS can take a few seconds) and the other side answering.
 pub(crate) const DIAL_TIMEOUT: Duration = Duration::from_secs(25);
@@ -94,7 +104,13 @@ impl WsRelayAddr {
 impl fmt::Display for WsRelayAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let scheme = if self.tls { "wss" } else { "ws" };
-        write!(f, "{scheme}://{}@{}{}", self.token, self.authority(), self.path)
+        write!(
+            f,
+            "{scheme}://{}@{}{}",
+            self.token,
+            self.authority(),
+            self.path
+        )
     }
 }
 
@@ -108,7 +124,9 @@ impl fmt::Debug for WsRelayAddr {
 fn loopback(host: &str) -> bool {
     host == "localhost"
         || host == "::1"
-        || host.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 impl FromStr for WsRelayAddr {
@@ -157,11 +175,17 @@ impl FromStr for WsRelayAddr {
                 None => (hostport, default),
             }
         };
-        if host.is_empty() || host.chars().any(|c| c.is_whitespace() || "/?#@".contains(c)) {
+        if host.is_empty()
+            || host
+                .chars()
+                .any(|c| c.is_whitespace() || "/?#@".contains(c))
+        {
             return Err(BadRelayAddr("bad host"));
         }
         if !tls && !loopback(host) {
-            return Err(BadRelayAddr("use wss:// (ws:// is only for a relay on this computer)"));
+            return Err(BadRelayAddr(
+                "use wss:// (ws:// is only for a relay on this computer)",
+            ));
         }
         Ok(Self {
             tls,
@@ -178,7 +202,9 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn valid_id(s: &str) -> bool {
-    s.len() == ROOM_LEN * 2 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == ROOM_LEN * 2
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// This device's id in a room: the same every time (so a reconnect replaces the old listener
@@ -311,6 +337,13 @@ impl Keepalive {
         self.answer_by = None;
     }
 
+    /// Ping now, and expect the answer soon (the network changed).
+    fn check_now(&mut self) {
+        let now = Instant::now();
+        self.next = now;
+        self.answer_by = Some(now + RECHECK_WAIT);
+    }
+
     /// At [`Self::deadline`]: `Err` if the connection is dead, `Ok(true)` to send a ping now.
     fn due(&mut self) -> Result<bool, ()> {
         let now = Instant::now();
@@ -362,6 +395,7 @@ async fn bridge(mut ws: Ws, local: DuplexStream) {
                 Some(Err(_)) => break "the relay connection failed",
                 Some(Ok(_)) => keepalive.heard(),
             },
+            () = NETWORK_CHANGED.notified() => keepalive.check_now(),
             () = sleep_until(keepalive.deadline()) => match keepalive.due() {
                 Err(()) => break "no answer to ping",
                 Ok(true) => {
@@ -550,6 +584,7 @@ impl Listener {
                     Some(Err(e)) => return Err(OpenError::Other(e.to_string())),
                     Some(Ok(_)) => keepalive.heard(),
                 },
+                () = NETWORK_CHANGED.notified() => keepalive.check_now(),
                 () = sleep_until(keepalive.deadline()) => match keepalive.due() {
                     Err(()) => return Err(OpenError::Other("no answer to ping".into())),
                     Ok(true) => ws.send(ping()).await.map_err(|e| OpenError::Other(e.to_string()))?,
@@ -602,7 +637,13 @@ mod tests {
             .parse()
             .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(
-            (a.tls, a.host.as_str(), a.port, a.path.as_str(), a.token.as_str()),
+            (
+                a.tls,
+                a.host.as_str(),
+                a.port,
+                a.path.as_str(),
+                a.token.as_str()
+            ),
             (true, "pairly-relay.me.workers.dev", 443, "", "s3cret_1")
         );
         assert_eq!(a.to_string(), "wss://s3cret_1@pairly-relay.me.workers.dev");
@@ -610,13 +651,20 @@ mod tests {
         let room = [0xab; ROOM_LEN];
         assert_eq!(
             a.url("answer", &room, "m1", Some("c2")),
-            format!("wss://pairly-relay.me.workers.dev/v1/answer/{}?m=m1&call=c2", hex(&room))
+            format!(
+                "wss://pairly-relay.me.workers.dev/v1/answer/{}?m=m1&call=c2",
+                hex(&room)
+            )
         );
 
-        let b: WsRelayAddr = "wss://t@example.com:8443/relay/".parse().unwrap_or_else(|e| panic!("{e}"));
+        let b: WsRelayAddr = "wss://t@example.com:8443/relay/"
+            .parse()
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!((b.port, b.path.as_str()), (8443, "/relay"));
         assert_eq!(b.to_string(), "wss://t@example.com:8443/relay");
-        let local: WsRelayAddr = "ws://t@127.0.0.1:8787".parse().unwrap_or_else(|e| panic!("{e}"));
+        let local: WsRelayAddr = "ws://t@127.0.0.1:8787"
+            .parse()
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!((local.tls, local.port), (false, 8787));
 
         for bad in [
@@ -653,8 +701,23 @@ mod tests {
         tokio::time::sleep(PONG_WAIT / 2).await;
         k.heard();
         tokio::time::sleep_until(k.deadline()).await;
-        assert_eq!(k.due(), Ok(true), "answered, so the next ping is on schedule");
+        assert_eq!(
+            k.due(),
+            Ok(true),
+            "answered, so the next ping is on schedule"
+        );
         tokio::time::sleep_until(k.deadline()).await;
         assert_eq!(k.due(), Err(()), "no answer in time");
+
+        // After a network change: a ping right away, and a short wait for its answer.
+        let mut k = Keepalive::new();
+        k.check_now();
+        assert_eq!(k.due(), Ok(true));
+        tokio::time::sleep(RECHECK_WAIT + Duration::from_millis(10)).await;
+        assert_eq!(
+            k.due(),
+            Err(()),
+            "the old network's connection is given up quickly"
+        );
     }
 }

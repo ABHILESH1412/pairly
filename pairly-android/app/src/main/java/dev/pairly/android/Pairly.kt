@@ -49,6 +49,8 @@ import dev.pairly.android.media.PcPlayers
 import dev.pairly.android.media.PhoneMedia
 import dev.pairly.android.notifications.MirroredNotifications
 import dev.pairly.android.notifications.PhoneNotifications
+import dev.pairly.android.camera.PhoneCamera
+import dev.pairly.android.device.ClipboardSync
 import dev.pairly.android.share.Downloads
 import dev.pairly.android.share.ShareEvent
 import dev.pairly.android.share.ShareFeatures
@@ -89,6 +91,8 @@ data class UiState(
  * [state], [pairing] and [messages].
  */
 object Pairly {
+    private const val MAX_CLIPBOARD_IMAGE = 32 * 1024 * 1024
+
     private const val TAG = "Pairly"
     private const val LAN_PORT: UShort = 47100u
     private const val NETWORK_DEBOUNCE_MS = 1_000L
@@ -165,6 +169,7 @@ object Pairly {
                 setup.files(SharedFiles(appContext))
                 setup.power(PhonePower())
                 setup.screen(PhoneScreen(appContext))
+                setup.camera(PhoneCamera(appContext))
                 setup.start().also { setup.close() }
             }
             node = started
@@ -337,6 +342,25 @@ object Pairly {
     fun screenFrame(device: String, data: ByteArray, key: Boolean, config: Boolean): Boolean =
         runCatching { node?.screenFrame(device, data, key, config) }.getOrNull() == true
 
+    /** The camera is filming for a PC. */
+    fun cameraStarted(device: String, width: Int, height: Int) {
+        runCatching { node?.cameraStarted(device, width.toUInt(), height.toUInt()) }
+            .onFailure { Log.w(TAG, "camera start not sent", it) }
+    }
+
+    /** One camera frame; true when the encoder should make a key frame now. */
+    fun cameraFrame(device: String, data: ByteArray, key: Boolean, config: Boolean): Boolean =
+        runCatching { node?.cameraFrame(device, data, key, config) }.getOrNull() == true
+
+    fun cameraStopped(device: String, reason: String) {
+        runCatching { node?.cameraStopped(device, reason) }
+    }
+
+    /** The phone's sound while it shares its screen (16-bit samples). */
+    fun screenAudio(device: String, rate: Int, channels: Int, data: ByteArray) {
+        runCatching { node?.screenAudio(device, rate.toUInt(), channels.toUByte(), data) }
+    }
+
     fun screenStopped(device: String, reason: String) {
         runCatching { node?.screenStopped(device, reason) }
     }
@@ -417,31 +441,67 @@ object Pairly {
     }
 
     /** Send the phone's clipboard to one device (the app is in the foreground, so it's readable). */
-    fun sendClipboard(device: Device, text: String?) {
-        if (text.isNullOrEmpty()) {
-            say(appContext.getString(R.string.clipboard_empty))
-            return
+    fun sendClipboard(device: Device, copied: ClipboardSync.Copied?) {
+        when (copied) {
+            null -> say(appContext.getString(R.string.clipboard_empty))
+            is ClipboardSync.Copied.Text -> runCatching { node?.sendClipboard(device.id, copied.text) }
+                .onSuccess { say(appContext.getString(R.string.clipboard_sent, device.name)) }
+                .onFailure { say(it.describe()) }
+            is ClipboardSync.Copied.Image -> scope.launch(Dispatchers.IO) {
+                runCatching { node?.sendClipboardImage(device.id, "image/png", clipboardPng(copied.uri)) }
+                    .onSuccess { say(appContext.getString(R.string.clipboard_image_sent, device.name)) }
+                    .onFailure { say(appContext.getString(R.string.clipboard_image_failed, it.describe())) }
+            }
         }
-        runCatching { node?.sendClipboard(device.id, text) }
-            .onSuccess { say(appContext.getString(R.string.clipboard_sent, device.name)) }
-            .onFailure { say(it.describe()) }
     }
 
     /** From the Quick Settings tile or the notification action: every connected device. */
-    fun sendClipboardToAll(text: String?) {
+    fun sendClipboardToAll(copied: ClipboardSync.Copied?) {
         val connected = _state.value.devices.filter { it.paired && it.link != null }
         if (connected.isEmpty()) {
             say(appContext.getString(R.string.clipboard_no_devices))
             return
         }
-        connected.forEach { sendClipboard(it, text) }
+        connected.forEach { sendClipboard(it, copied) }
     }
 
     /** Copied on the phone (noticed by the accessibility service): to every connected device. */
-    fun sendClipboardQuietly(text: String) {
-        _state.value.devices.filter { it.paired && it.link != null }.forEach { device ->
-            runCatching { node?.sendClipboard(device.id, text) }.onFailure { Log.w(TAG, "clipboard to ${device.name} failed", it) }
+    fun sendClipboardQuietly(text: String) = sendClipboardQuietly(ClipboardSync.Copied.Text(text))
+
+    fun sendClipboardQuietly(copied: ClipboardSync.Copied) {
+        val devices = _state.value.devices.filter { it.paired && it.link != null }
+        when (copied) {
+            is ClipboardSync.Copied.Text -> devices.forEach { device ->
+                runCatching { node?.sendClipboard(device.id, copied.text) }
+                    .onFailure { Log.w(TAG, "clipboard to ${device.name} failed", it) }
+            }
+            is ClipboardSync.Copied.Image -> scope.launch(Dispatchers.IO) {
+                val png = runCatching { clipboardPng(copied.uri) }.getOrElse {
+                    Log.w(TAG, "can't read the copied image", it)
+                    return@launch
+                }
+                devices.forEach { device ->
+                    runCatching { node?.sendClipboardImage(device.id, "image/png", png) }
+                        .onFailure { Log.w(TAG, "clipboard image to ${device.name} failed", it) }
+                }
+            }
         }
+    }
+
+    /** A copied image as PNG (what PCs put on their clipboards), at most 32 MB. */
+    private fun clipboardPng(uri: Uri): ByteArray {
+        val resolver = appContext.contentResolver
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("can't read the image")
+        val png = if (resolver.getType(uri) == "image/png") {
+            bytes
+        } else {
+            val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: error("not an image this phone can read")
+            java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                .toByteArray()
+        }
+        check(png.size <= MAX_CLIPBOARD_IMAGE) { "the image is too large" }
+        return png
     }
 
     /** Lock, power off or restart a PC; says how it went. */

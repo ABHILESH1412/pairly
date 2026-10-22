@@ -178,6 +178,10 @@ pub trait Daemon {
     fn set_name(&self, name: &str) -> zbus::Result<()>;
     /// Stop the daemon (every device disconnects).
     fn quit(&self) -> zbus::Result<()>;
+    /// Film with a phone's camera as this PC's webcam (`back`: its back camera), or stop.
+    fn webcam(&self, id: &str, on: bool, back: bool) -> zbus::Result<()>;
+    /// Whether a phone films for this PC now.
+    fn webcam_on(&self, id: &str) -> zbus::Result<bool>;
     /// (on, folder, allow changes): the folder paired devices may browse.
     fn file_sharing(&self) -> zbus::Result<(bool, String, bool)>;
     /// Share a folder with paired devices (or stop); takes effect at once.

@@ -37,8 +37,9 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::commands::{Commands, CommandsHost};
 use crate::hosts::{Host, NoShare};
+use crate::platform::clipboard::{Clipboard, Content as ClipContent};
 use crate::platform::toast::{self, Toast};
-use crate::platform::{self, clipboard::Clipboard, input::RemoteInput, media::LocalMedia};
+use crate::platform::{self, input::RemoteInput, media::LocalMedia};
 use crate::screen::Screens;
 use crate::settings::{Settings, computer_name};
 
@@ -250,12 +251,15 @@ impl Backend {
         ));
         // Copies on this PC go to connected devices (when that's on).
         let weak = Arc::downgrade(&this);
-        this.clipboard.clone().watch(move |text| {
+        this.clipboard.clone().watch(move |content| {
             if let Some(this) = weak.upgrade()
                 && this.settings().clipboard_auto
                 && let Some((_, f)) = this.running()
             {
-                f.clipboard.local_changed(&text);
+                match content {
+                    ClipContent::Text(text) => f.clipboard.local_changed(&text),
+                    ClipContent::Image(mime, data) => f.clipboard.local_image_changed(mime, &data),
+                }
             }
         });
         // Our battery, every minute.
@@ -450,6 +454,21 @@ impl Backend {
                 };
                 let Some(this) = weak.upgrade() else { return };
                 this.on_event(event);
+            }
+        });
+        // The network changed: links over the old one are checked at once.
+        let weak = Arc::downgrade(self);
+        tauri::async_runtime::spawn(async move {
+            let mut changes = crate::platform::network::changes();
+            while changes.changed().await.is_ok() {
+                // Windows reports a change in several steps: act once they settle.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                changes.borrow_and_update();
+                let Some((node, _)) = weak.upgrade().and_then(|this| this.running()) else {
+                    return;
+                };
+                tracing::info!("the network changed: checking links");
+                node.network_changed().await;
             }
         });
         // Refresh link times and the like now and then.
@@ -747,8 +766,15 @@ impl Backend {
     }
 
     pub fn send_clipboard(&self, id: &str) -> Result<()> {
-        let text = Clipboard::get().context("the clipboard has no text")?;
-        self.features()?.clipboard.send_to(parse(id)?, &text)?;
+        let peer = parse(id)?;
+        match Clipboard::get().context("the clipboard has no text or image")? {
+            ClipContent::Text(text) => self.features()?.clipboard.send_to(peer, &text)?,
+            ClipContent::Image(mime, data) => {
+                self.features()?
+                    .clipboard
+                    .send_image_to(peer, mime, &data)?
+            }
+        }
         Ok(())
     }
 

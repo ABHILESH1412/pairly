@@ -6,7 +6,8 @@
 //! when the notification server has no inline replies), and
 //! `pairly-gtk --send [--to <device>] [files…]` sends files (file managers, the tray), and
 //! `pairly-gtk --laser` is the laser pointer overlay, and `pairly-gtk --screen <name> [--pc]` a
-//! phone's or another PC's screen (both started by pairlyd).
+//! phone's or another PC's screen, and `pairly-gtk --webcam <device>` feeds a phone's camera into
+//! a virtual camera (all started by pairlyd).
 #![forbid(unsafe_code)]
 
 mod app;
@@ -23,6 +24,7 @@ mod screen;
 mod screencopy;
 mod send;
 mod settings;
+mod webcam;
 
 use std::collections::HashMap;
 
@@ -49,6 +51,12 @@ fn main() {
         && flag == "--screen"
     {
         screen::run(title, args.iter().any(|a| a == "--pc"));
+        return;
+    }
+    if let [flag, device, ..] = args.as_slice()
+        && flag == "--webcam"
+    {
+        webcam::run(device);
         return;
     }
     if let [flag, device, notification, title, ..] = args.as_slice()

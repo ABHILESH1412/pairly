@@ -28,6 +28,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.core.content.IntentCompat
 import dev.pairly.android.Notifications
 import dev.pairly.android.Pairly
@@ -88,6 +89,9 @@ class PhoneScreen(context: Context) : ScreenHandler {
     override fun viewerStopped(deviceId: String, reason: String) =
         PcScreenSession.deliver(deviceId, PcScreenSession.Event.Stopped(reason))
 
+    override fun viewerAudio(deviceId: String, rate: UInt, channels: UByte, data: ByteArray) =
+        PcScreenSession.deliver(deviceId, PcScreenSession.Event.Audio(rate.toInt(), channels.toInt(), data))
+
     private fun askWithNotification(consent: Intent, deviceName: String) {
         val tap = PendingIntent.getActivity(
             context,
@@ -136,17 +140,38 @@ class ScreenConsentActivity : Activity() {
             return
         }
         if (savedInstanceState == null) {
-            val projection = getSystemService(MediaProjectionManager::class.java)
-            // Android 14+: ask for the whole screen directly, so the prompt is a plain
-            // "Cancel / Start" with no "single app or entire screen" picker or app list.
-            val ask = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                projection.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            // The phone's sound goes with its screen (Android 10+), with the "record audio"
+            // permission: asked once; without it the screen is shared silently.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED &&
+                !getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_ASKED_AUDIO, false)
+            ) {
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit { putBoolean(KEY_ASKED_AUDIO, true) }
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_AUDIO)
             } else {
-                projection.createScreenCaptureIntent()
+                askToRecord()
             }
-            @Suppress("DEPRECATION") // the result API needs a ComponentActivity
-            startActivityForResult(ask, REQUEST_RECORD)
         }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        @Suppress("DEPRECATION")
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_AUDIO) askToRecord()
+    }
+
+    private fun askToRecord() {
+        val projection = getSystemService(MediaProjectionManager::class.java)
+        // Android 14+: ask for the whole screen directly, so the prompt is a plain
+        // "Cancel / Start" with no "single app or entire screen" picker or app list.
+        val ask = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            projection.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            projection.createScreenCaptureIntent()
+        }
+        @Suppress("DEPRECATION") // the result API needs a ComponentActivity
+        startActivityForResult(ask, REQUEST_RECORD)
     }
 
     @Deprecated("Deprecated in Java")
@@ -166,6 +191,9 @@ class ScreenConsentActivity : Activity() {
 
     private companion object {
         const val REQUEST_RECORD = 1
+        const val REQUEST_AUDIO = 2
+        const val PREFS = "screen"
+        const val KEY_ASKED_AUDIO = "asked_audio"
     }
 }
 
@@ -174,6 +202,9 @@ class ScreenConsentActivity : Activity() {
  * A foreground service of type "mediaProjection", as Android requires while recording.
  */
 class ScreenShareService : Service() {
+    /** Recording the phone's sound while this is it (the thread stops when it changes). */
+    @Volatile
+    private var recorder: android.media.AudioRecord? = null
     private var projection: MediaProjection? = null
     private var display: VirtualDisplay? = null
     private var encoder: MediaCodec? = null
@@ -290,6 +321,46 @@ class ScreenShareService : Service() {
         )
         Pairly.screenStarted(target, w, h)
         Log.i(PhoneScreen.TAG, "sharing the screen at ${w}x$h")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) {
+            runCatching { startSound(mp, target) }.onFailure { Log.w(PhoneScreen.TAG, "no sound with the screen", it) }
+        }
+    }
+
+    /** What the phone plays (media and games; never calls), 48 kHz stereo, to the PC. */
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
+    @androidx.annotation.RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    private fun startSound(mp: MediaProjection, target: String) {
+        val capture = android.media.AudioPlaybackCaptureConfiguration.Builder(mp)
+            .addMatchingUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .addMatchingUsage(android.media.AudioAttributes.USAGE_GAME)
+            .addMatchingUsage(android.media.AudioAttributes.USAGE_UNKNOWN)
+            .build()
+        val format = android.media.AudioFormat.Builder()
+            .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(SOUND_RATE)
+            .setChannelMask(android.media.AudioFormat.CHANNEL_IN_STEREO)
+            .build()
+        val record = android.media.AudioRecord.Builder()
+            .setAudioFormat(format)
+            .setAudioPlaybackCaptureConfig(capture)
+            .setBufferSizeInBytes(SOUND_PIECE * 8)
+            .build()
+        record.startRecording()
+        recorder = record
+        Thread({
+            val buffer = ByteArray(SOUND_PIECE)
+            while (recorder === record) {
+                val n = record.read(buffer, 0, buffer.size)
+                if (n < 0) break
+                // Whole stereo samples only.
+                val whole = n - n % 4
+                if (whole > 0) Pairly.screenAudio(target, SOUND_RATE, 2, buffer.copyOf(whole))
+            }
+            runCatching { record.stop() }
+            record.release()
+        }, "pairly-sound").start()
     }
 
     /** The whole display in real pixels. */
@@ -321,6 +392,7 @@ class ScreenShareService : Service() {
     }
 
     override fun onDestroy() {
+        recorder = null
         runCatching { display?.release() }
         runCatching { encoder?.stop() }
         runCatching { encoder?.release() }
@@ -343,6 +415,9 @@ class ScreenShareService : Service() {
         private const val ONGOING_ID = 42
         private const val MAX_SIDE = 1600
         private const val BIT_RATE = 6_000_000
+        private const val SOUND_RATE = 48_000
+        /** 20 ms of 48 kHz 16-bit stereo. */
+        private const val SOUND_PIECE = 3_840
         private const val FRAME_RATE = 30
 
         fun start(context: Context, device: String, name: String, resultCode: Int, data: Intent) {

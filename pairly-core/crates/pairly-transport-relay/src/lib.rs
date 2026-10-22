@@ -334,6 +334,10 @@ impl Transport for RelayTransport {
         Ok(Box::new(stream))
     }
 
+    async fn network_changed(&self) {
+        ws::network_changed();
+    }
+
     async fn stop(&self) {
         if let Some(running) = self.lock().take() {
             // Dropping the handles ends the relay tasks.

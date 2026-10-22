@@ -136,7 +136,7 @@ impl MediaHost for LinuxMedia {
 }
 
 /// `file:///a%20b.png` → `/a b.png`.
-fn file_url_path(url: &str) -> Option<PathBuf> {
+pub(crate) fn file_url_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file://")?;
     let bytes = rest.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
