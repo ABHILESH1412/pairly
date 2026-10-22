@@ -46,6 +46,14 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.2" date="2026-10-22">
+      <description>
+        <ul>
+          <li>[fix] now the user can use all the gestures and the shortcuts for the other pc in the screen sharing mode. [fix] now the sound will play on the pc which is getting the shared screen from other pc [feat] now the image will also get copied like text [feat] use phone as a camera [fix] the connection will start to get connected more fastly</li>
+          <li>Laser pointer across all monitors, starting on the slides</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-10-13">
       <description>
         <ul>
