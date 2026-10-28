@@ -44,9 +44,7 @@ class PhoneCamera(context: Context) : CameraHandler {
     private val context = context.applicationContext
 
     override fun startCamera(deviceId: String, deviceName: String, back: Boolean) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            throw PairlyException.Failed(context.getString(R.string.camera_no_permission))
-        }
+        Log.i(TAG, "the PC asks for the ${if (back) "back" else "front"} camera")
         if (CameraShareService.device != null && CameraShareService.device != deviceId) {
             throw PairlyException.Failed(context.getString(R.string.camera_busy))
         }
@@ -95,21 +93,49 @@ class PhoneCamera(context: Context) : CameraHandler {
     }
 }
 
-/** Opened from the request: starts the camera service from the screen, then goes away. */
+/**
+ * Opened from the request: asks for the camera permission if Pairly doesn't have it yet, starts
+ * the camera service from the screen, then goes away.
+ */
 class CameraConsentActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         NotificationManagerCompat.from(this).cancel(PhoneCamera.ASK_ID)
-        val device = intent.getStringExtra(PhoneCamera.EXTRA_DEVICE)
-        if (device != null && savedInstanceState == null) {
-            CameraShareService.start(
-                this,
-                device,
-                intent.getStringExtra(PhoneCamera.EXTRA_NAME).orEmpty(),
-                intent.getBooleanExtra(PhoneCamera.EXTRA_BACK, false),
-            )
+        if (savedInstanceState != null) return
+        if (intent.getStringExtra(PhoneCamera.EXTRA_DEVICE) == null) {
+            finish()
+        } else if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            film()
+        } else {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
         }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_CAMERA) return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            film()
+        } else {
+            intent.getStringExtra(PhoneCamera.EXTRA_DEVICE)?.let {
+                Pairly.cameraStopped(it, getString(R.string.camera_no_permission))
+            }
+            finish()
+        }
+    }
+
+    private fun film() {
+        CameraShareService.start(
+            this,
+            intent.getStringExtra(PhoneCamera.EXTRA_DEVICE) ?: return finish(),
+            intent.getStringExtra(PhoneCamera.EXTRA_NAME).orEmpty(),
+            intent.getBooleanExtra(PhoneCamera.EXTRA_BACK, false),
+        )
         finish()
+    }
+
+    private companion object {
+        const val REQUEST_CAMERA = 1
     }
 }
 

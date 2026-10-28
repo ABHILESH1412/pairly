@@ -5,7 +5,7 @@
 //! The helper reads the same messages as the screen viewer: `[kind u8][length u32 BE][payload]`
 //! with 1 started (`[width u32][height u32]`), 2 frame (`[flags u8][H.264]`), 3 stopped.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
@@ -38,6 +38,8 @@ struct Feed {
 #[derive(Default)]
 pub struct Webcam {
     feeds: Mutex<HashMap<DeviceId, Feed>>,
+    /// Phones asked for their camera that haven't answered yet.
+    asked: Mutex<HashSet<DeviceId>>,
     plugin: OnceLock<Weak<CameraPlugin>>,
     conn: OnceLock<Connection>,
 }
@@ -89,6 +91,10 @@ impl Webcam {
         self.feeds.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn asked(&self) -> MutexGuard<'_, HashSet<DeviceId>> {
+        self.asked.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn notify(&self, summary: String, body: &str) {
         if let Some(conn) = self.conn.get() {
             crate::notifications::show_simple(conn, summary, body);
@@ -102,14 +108,20 @@ impl Webcam {
             return Err(format!("there's no virtual camera yet. {SETUP_HINT}"));
         }
         let request = if on {
+            self.asked().insert(peer);
             CameraRequest::Start {
                 facing: if back { Facing::Back } else { Facing::Front },
             }
         } else {
+            self.asked().remove(&peer);
             self.end(peer);
             CameraRequest::Stop
         };
-        plugin.request(peer, request).map_err(|e| e.to_string())
+        info!(device = %peer, ?request, "asking the phone for its camera");
+        plugin.request(peer, request).map_err(|e| {
+            self.asked().remove(&peer);
+            e.to_string()
+        })
     }
 
     /// Whether a phone is filming for this PC now.
@@ -160,6 +172,7 @@ fn write_loop(mut stdin: ChildStdin, rx: &std::sync::mpsc::Receiver<Vec<u8>>) {
 
 impl CameraHost for Webcam {
     fn camera_started(&self, from: &PeerInfo, width: u32, height: u32) {
+        self.asked().remove(&from.id);
         match self.start_feed(from, width, height) {
             Ok(()) => self.notify(
                 format!("{}'s camera is your webcam", from.name),
@@ -193,13 +206,20 @@ impl CameraHost for Webcam {
     }
 
     fn camera_stopped(&self, from: &PeerInfo, reason: &str) {
+        let refused = self.asked().remove(&from.id);
         if self.is_on(from.id) {
+            info!(device = %from.id, reason, "the phone's camera stopped");
             self.end(from.id);
             self.notify(format!("{}'s camera stopped", from.name), reason);
+        } else if refused {
+            // Refused or failed before filming: without this the tile just does nothing.
+            warn!(device = %from.id, reason, "the phone's camera didn't start");
+            self.notify(format!("Can't use {}'s camera", from.name), reason);
         }
     }
 
     fn disconnected(&self, peer: DeviceId) {
+        self.asked().remove(&peer);
         self.end(peer);
     }
 }

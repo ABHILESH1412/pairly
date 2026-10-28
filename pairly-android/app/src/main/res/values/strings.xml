@@ -165,7 +165,7 @@
     <string name="camera_in_use_title">Your camera is %1$s\'s webcam</string>
     <string name="camera_in_use_body">Pairly is filming for the PC</string>
     <string name="camera_stop">Stop</string>
-    <string name="camera_no_permission">allow Pairly to use the camera on the phone first</string>
+    <string name="camera_no_permission">Pairly isn\'t allowed to use the phone\'s camera</string>
     <string name="camera_busy">the camera is already filming for another device</string>
     <string name="camera_open_pairly">open Pairly on the phone to use its camera</string>
     <string name="camera_failed">the camera failed: %1$s</string>
