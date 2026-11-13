@@ -2,9 +2,10 @@
 //! controls it: taps, swipes, keys and text for a phone's screen; the pointer, mouse buttons,
 //! wheel and key combinations for a PC's (a PC watching another PC).
 //!
-//! Only over the local network: video needs its bandwidth, and Bluetooth or a relay would
-//! make it unusable (or expensive). Both sides check the link, and a stream stops if its
-//! session moves off the LAN.
+//! Over the local network or the internet relay, not Bluetooth (far too slow for video). Over
+//! the relay the sharer sends a lighter stream (it asks [`ScreenPlugin::over_internet`]) and the
+//! sound goes mono at half the rate. A stream keeps going when its session moves between the
+//! LAN and the relay, and stops if it moves to Bluetooth.
 //!
 //! Flow: the viewer sends `screen.request {Start}`; the sharing device asks its user, then sends
 //! `screen.started`, a stream of `screen.frame`s (unreliable: a late frame is useless), and
@@ -91,8 +92,8 @@ impl PacketBody for ScreenFrame {
 }
 
 /// Sharer → viewer: a moment of the shared device's sound, as 16-bit signed little-endian
-/// samples, channels interleaved. Uncompressed: screen sharing only runs on the local network,
-/// where its 1.5 Mbit/s (48 kHz stereo) is less than the video's.
+/// samples, channels interleaved. Uncompressed: on the local network its 1.5 Mbit/s (48 kHz
+/// stereo) is less than the video's; over the relay it's sent mono at half the rate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScreenAudio {
     pub rate: u32,
@@ -325,13 +326,40 @@ pub struct ScreenPlugin {
     behind: Mutex<HashSet<DeviceId>>,
 }
 
-/// The local network (or the in-process test network).
-fn is_local(kind: Option<TransportKind>) -> bool {
-    matches!(kind, Some(TransportKind::Lan | TransportKind::Memory))
+/// Links fast enough for video: the local network (or the in-process test network) and the
+/// internet relay. Not Bluetooth.
+fn can_stream(kind: Option<TransportKind>) -> bool {
+    matches!(
+        kind,
+        Some(TransportKind::Lan | TransportKind::Memory | TransportKind::Relay)
+    )
 }
 
-fn lan_only(ctx: &PluginCtx) -> bool {
-    is_local(ctx.transport())
+const NOT_ON_BLUETOOTH: &str = "screen sharing doesn't work over Bluetooth (too slow): use the \
+     same Wi-Fi or the internet relay";
+
+/// The sound for a slower link: mono, and half the rate when it's 32 kHz or more (each output
+/// sample averages the frames it replaces). A quarter of the data for 48 kHz stereo.
+fn lighter(audio: &ScreenAudio) -> ScreenAudio {
+    let channels = usize::from(audio.channels.max(1));
+    let step = if audio.rate >= 32_000 { 2 } else { 1 };
+    let samples: Vec<i32> = audio
+        .data
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i32::from(i16::from_le_bytes(*b)))
+        .collect();
+    let mut data = Vec::with_capacity(samples.len() / (channels * step) * 2);
+    for group in samples.chunks_exact(channels * step) {
+        let mean = group.iter().sum::<i32>() / group.len() as i32;
+        data.extend_from_slice(&(mean as i16).to_le_bytes());
+    }
+    ScreenAudio {
+        rate: audio.rate / step as u32,
+        channels: 1,
+        data,
+    }
 }
 
 impl ScreenPlugin {
@@ -343,20 +371,24 @@ impl ScreenPlugin {
         })
     }
 
-    fn require_lan(&self, peer: DeviceId) -> Result<()> {
-        if is_local(self.peers.transport(peer)) {
+    fn require_link(&self, peer: DeviceId) -> Result<()> {
+        if can_stream(self.peers.transport(peer)) {
             Ok(())
         } else {
-            Err(CoreError::Transport(
-                "screen sharing works only when both devices are on the same Wi-Fi".into(),
-            ))
+            Err(CoreError::Transport(NOT_ON_BLUETOOTH.into()))
         }
+    }
+
+    /// Whether `peer` is reached through the internet relay: the sharer should send a lighter
+    /// stream (smaller and fewer bits than on the local network).
+    pub fn over_internet(&self, peer: DeviceId) -> bool {
+        self.peers.transport(peer) == Some(TransportKind::Relay)
     }
 
     /// Viewer: ask `peer` to share its screen (or stop).
     pub fn request(&self, peer: DeviceId, action: ScreenAction) -> Result<()> {
         if action == ScreenAction::Start {
-            self.require_lan(peer)?;
+            self.require_link(peer)?;
         }
         self.peers.send(
             peer,
@@ -379,7 +411,7 @@ impl ScreenPlugin {
 
     /// Sharer: the stream starts.
     pub fn started(&self, peer: DeviceId, width: u32, height: u32) -> Result<()> {
-        self.require_lan(peer)?;
+        self.require_link(peer)?;
         self.peers.send(
             peer,
             OutboundPacket::reliable(&ScreenStarted { width, height }, Priority::Control)?,
@@ -398,21 +430,23 @@ impl ScreenPlugin {
         if !audio.usable() {
             return Err(CoreError::Violation("bad screen audio"));
         }
-        self.require_lan(peer)?;
+        self.require_link(peer)?;
         if self.peers.queued(peer, Priority::Interactive).unwrap_or(0) > MAX_AUDIO_BACKLOG {
             return Ok(());
         }
-        self.peers.send(
-            peer,
-            OutboundPacket::unreliable(audio, Priority::Interactive)?,
-        )
+        let packet = if self.over_internet(peer) {
+            OutboundPacket::unreliable(&lighter(audio), Priority::Interactive)?
+        } else {
+            OutboundPacket::unreliable(audio, Priority::Interactive)?
+        };
+        self.peers.send(peer, packet)
     }
 
     pub fn frame(&self, peer: DeviceId, frame: &ScreenFrame) -> Result<bool> {
         if frame.data.len() > MAX_FRAME {
             return Err(CoreError::Violation("screen frame too large"));
         }
-        self.require_lan(peer)?;
+        self.require_link(peer)?;
         if frame.config {
             // Codec setup must arrive.
             self.peers
@@ -472,12 +506,12 @@ impl Plugin for ScreenPlugin {
     }
 
     async fn on_connected(&self, ctx: &PluginCtx) {
-        // A session that moved off the LAN mid-stream ends it on both sides.
-        if !lan_only(ctx) {
+        // A session that moved to Bluetooth mid-stream ends it on both sides. Between the
+        // LAN and the relay it carries on: falling behind skips to the next key frame.
+        if !can_stream(ctx.transport()) {
             let from = ctx.peer_info();
             self.host.stop_sharing(&from);
-            self.host
-                .stopped(&from, "the devices left the shared Wi-Fi");
+            self.host.stopped(&from, NOT_ON_BLUETOOTH);
         }
         self.peers.insert(ctx);
     }
@@ -489,10 +523,10 @@ impl Plugin for ScreenPlugin {
                 Ok(ScreenRequest {
                     action: ScreenAction::Start,
                 }) => {
-                    let refused = if lan_only(ctx) {
+                    let refused = if can_stream(ctx.transport()) {
                         self.host.start_sharing(&from).err()
                     } else {
-                        Some("screen sharing works only on the same Wi-Fi".to_owned())
+                        Some(NOT_ON_BLUETOOTH.to_owned())
                     };
                     if let Some(reason) = refused
                         && let Ok(p) =
@@ -521,12 +555,14 @@ impl Plugin for ScreenPlugin {
                 Err(e) => debug!(peer = %from.id, error = %e, "bad screen.started"),
             },
             ScreenFrame::TYPE => match packet.body::<ScreenFrame>() {
-                Ok(f) if f.data.len() <= MAX_FRAME && lan_only(ctx) => self.host.frame(&from, f),
+                Ok(f) if f.data.len() <= MAX_FRAME && can_stream(ctx.transport()) => {
+                    self.host.frame(&from, f)
+                }
                 Ok(_) => {}
                 Err(e) => debug!(peer = %from.id, error = %e, "bad screen.frame"),
             },
             ScreenAudio::TYPE => match packet.body::<ScreenAudio>() {
-                Ok(a) if a.usable() && lan_only(ctx) => self.host.audio(&from, a),
+                Ok(a) if a.usable() && can_stream(ctx.transport()) => self.host.audio(&from, a),
                 Ok(_) => {}
                 Err(e) => debug!(peer = %from.id, error = %e, "bad screen.audio"),
             },
@@ -545,5 +581,34 @@ impl Plugin for ScreenPlugin {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&peer);
         self.host.disconnected(peer);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internet_sound_is_mono_at_half_the_rate() {
+        // 48 kHz stereo, two frames: (100, 300) and (500, 700).
+        let data = [100_i16, 300, 500, 700]
+            .iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+        let light = lighter(&ScreenAudio {
+            rate: 48_000,
+            channels: 2,
+            data,
+        });
+        assert_eq!((light.rate, light.channels), (24_000, 1));
+        assert_eq!(light.data, 400_i16.to_le_bytes());
+        assert!(light.usable());
+        // Already mono at a low rate: unchanged.
+        let speech = lighter(&ScreenAudio {
+            rate: 16_000,
+            channels: 1,
+            data: vec![1, 0, 2, 0],
+        });
+        assert_eq!((speech.rate, speech.data), (16_000, vec![1, 0, 2, 0]));
     }
 }

@@ -339,6 +339,10 @@ object Pairly {
      * One encoded frame for the PC; skipped quietly if the link can't keep up. Returns true when
      * the encoder should make a key frame now (frames were skipped, the PC needs one to resume).
      */
+    /** The PC watches over the internet relay: share a lighter stream. */
+    fun screenOverInternet(device: String): Boolean =
+        runCatching { node?.screenOverInternet(device) }.getOrNull() == true
+
     fun screenFrame(device: String, data: ByteArray, key: Boolean, config: Boolean): Boolean =
         runCatching { node?.screenFrame(device, data, key, config) }.getOrNull() == true
 

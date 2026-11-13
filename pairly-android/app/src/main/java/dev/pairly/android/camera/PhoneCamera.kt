@@ -14,6 +14,7 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -23,6 +24,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.util.Log
+import android.util.Range
 import android.view.Surface
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -236,7 +238,7 @@ class CameraShareService : Service() {
             object : CameraDevice.StateCallback() {
                 override fun onOpened(opened: CameraDevice) {
                     camera = opened
-                    record(opened, surface, handler, target)
+                    record(opened, manager.getCameraCharacteristics(id), surface, handler, target)
                 }
 
                 override fun onDisconnected(closed: CameraDevice) {
@@ -251,17 +253,39 @@ class CameraShareService : Service() {
         )
     }
 
-    private fun record(opened: CameraDevice, surface: Surface, handler: Handler, target: String) {
+    private fun record(
+        opened: CameraDevice,
+        info: CameraCharacteristics,
+        surface: Surface,
+        handler: Handler,
+        target: String,
+    ) {
+        // A fixed 30 fps caps each exposure at 1/30 s: indoors at night that's a nearly black
+        // picture. Let the frame rate drop (as low as the camera allows, up to 30) so it can
+        // expose longer.
+        val fps = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.filter { it.upper == FRAME_RATE }
+            ?.minByOrNull { it.lower }
+        val focus = info.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+            ?.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO) == true
         @Suppress("DEPRECATION") // SessionConfiguration needs Android 9; this works on 8 too
         opened.createCaptureSession(
             listOf(surface),
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     runCatching {
-                        val request = opened.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply { addTarget(surface) }
+                        val request = opened.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                            addTarget(surface)
+                            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                            fps?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(it.lower, it.upper)) }
+                            if (focus) {
+                                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                            }
+                        }
                         session.setRepeatingRequest(request.build(), null, handler)
                         Pairly.cameraStarted(target, WIDTH, HEIGHT)
-                        Log.i(PhoneCamera.TAG, "filming for the PC at ${WIDTH}x$HEIGHT")
+                        Log.i(PhoneCamera.TAG, "filming for the PC at ${WIDTH}x$HEIGHT, $fps fps")
                     }.onFailure { fail(it) }
                 }
 

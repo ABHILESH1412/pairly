@@ -6,8 +6,13 @@
 //!
 //! On every (re)connect the source resends what is currently showing, then `active` with the
 //! full id list, so mirrors of notifications that went away while offline are cleaned up.
+//! That resend is silent (what came in while apart shows up quietly), and a mirror skips any
+//! notification it was already shown unchanged, so a reconnect or a switch between Wi-Fi,
+//! Bluetooth and the relay pops nothing up again. Only new notifications ring.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use async_trait::async_trait;
@@ -22,6 +27,8 @@ use tracing::debug;
 const MAX_ACTIVE: usize = 50;
 const MAX_ICON_SIDE: u16 = 128;
 const MAX_ACTIONS: usize = 5;
+/// How many mirrored notifications per device we remember as already shown.
+const MAX_DELIVERED: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationAction {
@@ -70,6 +77,28 @@ pub struct Notification {
 
 impl PacketBody for Notification {
     const TYPE: &'static str = "notification.posted";
+}
+
+impl Notification {
+    /// What a person sees: a change in any of it is worth showing again. Not `silent`.
+    fn digest(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        (
+            &self.app,
+            &self.title,
+            &self.text,
+            self.time,
+            self.can_reply,
+        )
+            .hash(&mut h);
+        for a in &self.actions {
+            (&a.key, &a.label).hash(&mut h);
+        }
+        if let Some(icon) = &self.icon {
+            (icon.width, icon.height, &icon.rgba).hash(&mut h);
+        }
+        h.finish()
+    }
 }
 
 fn truncate(s: &mut String, max_chars: usize) {
@@ -174,6 +203,9 @@ pub struct NotificationPlugin {
     peers: Mutex<HashMap<DeviceId, PluginCtx>>,
     /// Our own showing notifications, oldest first.
     active: Mutex<VecDeque<Notification>>,
+    /// Mirrors already shown, per source device: id → [`Notification::digest`]. Kept across
+    /// reconnects (that's the point), dropped when the source says the notification is gone.
+    delivered: Mutex<HashMap<DeviceId, HashMap<String, u64>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -190,7 +222,19 @@ impl NotificationPlugin {
             host,
             peers: Mutex::default(),
             active: Mutex::default(),
+            delivered: Mutex::default(),
         })
+    }
+
+    /// Whether `n` from `peer` is new or changed (then it's remembered as shown).
+    fn first_showing(&self, peer: DeviceId, n: &Notification) -> bool {
+        let mut delivered = lock(&self.delivered);
+        let seen = delivered.entry(peer).or_default();
+        if seen.len() >= MAX_DELIVERED && !seen.contains_key(&n.id) {
+            // A source that never says "removed": start over rather than grow.
+            seen.clear();
+        }
+        seen.insert(n.id.clone(), n.digest()) != Some(n.digest())
     }
 
     fn broadcast(&self, packet: &OutboundPacket) {
@@ -270,12 +314,26 @@ impl NotificationPlugin {
         let from = ctx.peer_info();
         match packet.ty.as_str() {
             Notification::TYPE => {
-                if let Some(n) = packet.body::<Notification>()?.sanitize() {
+                if let Some(n) = packet.body::<Notification>()?.sanitize()
+                    && self.first_showing(from.id, &n)
+                {
                     self.host.show(&from, &n);
                 }
             }
-            Removed::TYPE => self.host.remove(&from, &packet.body::<Removed>()?.id),
-            Active::TYPE => self.host.sync(&from, &packet.body::<Active>()?.ids),
+            Removed::TYPE => {
+                let id = packet.body::<Removed>()?.id;
+                if let Some(seen) = lock(&self.delivered).get_mut(&from.id) {
+                    seen.remove(&id);
+                }
+                self.host.remove(&from, &id);
+            }
+            Active::TYPE => {
+                let ids = packet.body::<Active>()?.ids;
+                if let Some(seen) = lock(&self.delivered).get_mut(&from.id) {
+                    seen.retain(|id, _| ids.contains(id));
+                }
+                self.host.sync(&from, &ids);
+            }
             Dismiss::TYPE => self.host.dismiss_local(&packet.body::<Dismiss>()?.id),
             Action::TYPE => {
                 let a = packet.body::<Action>()?;
@@ -319,10 +377,15 @@ impl Plugin for NotificationPlugin {
         if !ctx.peer_accepts(Notification::TYPE) {
             return;
         }
-        // Resync: everything still showing, then the full list so stale mirrors go away.
+        // Resync: everything still showing (quietly: it isn't new), then the full list so
+        // stale mirrors go away.
         let snapshot: Vec<Notification> = lock(&self.active).iter().cloned().collect();
         for n in &snapshot {
-            if let Ok(packet) = reliable(n) {
+            let quiet = Notification {
+                silent: true,
+                ..n.clone()
+            };
+            if let Ok(packet) = reliable(&quiet) {
                 let _ = ctx.send(packet);
             }
         }

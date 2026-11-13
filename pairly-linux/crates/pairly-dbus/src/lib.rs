@@ -266,7 +266,7 @@ pub trait Daemon {
     fn files_delete(&self, id: &str, path: &str) -> zbus::Result<()>;
     fn files_mkdir(&self, id: &str, path: &str) -> zbus::Result<()>;
     fn files_rename(&self, id: &str, from: &str, to: &str) -> zbus::Result<()>;
-    /// Open a window with the phone's screen, to watch and control it (same Wi-Fi only).
+    /// Open a window with the phone's screen, to watch and control it (not over Bluetooth).
     fn show_phone_screen(&self, id: &str) -> zbus::Result<()>;
     /// Lock the phone's screen, or power it off or restart it: `lock`, `poweroff`, `restart`.
     fn phone_power(&self, id: &str, action: &str) -> zbus::Result<()>;

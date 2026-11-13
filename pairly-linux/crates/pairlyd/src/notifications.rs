@@ -200,6 +200,10 @@ struct Mirror {
     answered: bool,
 }
 
+/// The category of notifications Pairly shows quietly (caught up after a reconnect, or marked
+/// silent by the source).
+const QUIET_CATEGORY: &str = "x-pairly.quiet";
+
 struct Mirrors {
     conn: Connection,
     plugin: Arc<NotificationPlugin>,
@@ -229,7 +233,11 @@ impl Mirrors {
         let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
         hints.insert(ORIGIN_HINT, Value::from(from.id.to_string()));
         if n.silent {
+            // No sound, and no pop-up where the server allows: low urgency (GNOME and KDE
+            // keep those in the list) and a category for rules (swaync "muted").
             hints.insert("suppress-sound", Value::from(true));
+            hints.insert("urgency", Value::from(0u8));
+            hints.insert("category", Value::from(QUIET_CATEGORY));
         }
         if let Some(icon) = &n.icon {
             let (w, h) = (i32::from(icon.width), i32::from(icon.height));

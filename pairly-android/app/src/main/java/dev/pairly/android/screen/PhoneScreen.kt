@@ -39,7 +39,7 @@ import dev.pairly.core.ffi.ScreenHandler
 import dev.pairly.core.ffi.ScreenInputData
 
 /**
- * Shows this phone's screen to a paired PC that asks (same Wi-Fi only), and lets it control
+ * Shows this phone's screen to a paired PC that asks (over Wi-Fi or the internet relay), and lets it control
  * the phone: the PC's taps, swipes and keys are performed by Pairly's accessibility service.
  *
  * Android asks the user's permission ("Start recording?") every time; [ScreenConsentActivity]
@@ -50,9 +50,12 @@ class PhoneScreen(context: Context) : ScreenHandler {
     private val context = context.applicationContext
 
     override fun startSharing(deviceId: String, deviceName: String) {
-        if (ScreenShareService.device != null && ScreenShareService.device != deviceId) {
+        val sharing = ScreenShareService.device ?: ShellScreen.device
+        if (sharing != null && sharing != deviceId) {
             throw PairlyException.Failed("the screen is already shared with another device")
         }
+        // The screen helper (started over adb) shares without asking.
+        if (ScreenShareService.device == null && ShellScreen.start(context, deviceId, deviceName)) return
         val consent = Intent(context, ScreenConsentActivity::class.java)
             .putExtra(EXTRA_DEVICE, deviceId)
             .putExtra(EXTRA_NAME, deviceName)
@@ -64,10 +67,12 @@ class PhoneScreen(context: Context) : ScreenHandler {
     }
 
     override fun stopSharing(deviceId: String) {
+        if (ShellScreen.device == deviceId) ShellScreen.stop(context)
         if (ScreenShareService.device == deviceId) ScreenShareService.stop(context)
     }
 
     override fun input(deviceId: String, input: ScreenInputData) {
+        if (ShellScreen.device == deviceId && ShellScreen.input(input)) return
         if (ScreenShareService.device != deviceId) return
         val service = PairlyAccessibility.instance
         if (service == null) {
@@ -260,13 +265,15 @@ class ScreenShareService : Service() {
             handler,
         )
 
-        // The whole screen, scaled so its longer side is at most MAX_SIDE (even sizes).
+        // The whole screen, scaled so its longer side is at most MAX_SIDE (even sizes). For a PC
+        // watching over the internet relay: smaller, fewer bits and frames, to fit mobile data.
+        val internet = Pairly.screenOverInternet(target)
         val (sw, sh) = screenSize()
-        val (w, h) = scaled(sw, sh)
+        val (w, h) = scaled(sw, sh, if (internet) INTERNET_SIDE else MAX_SIDE)
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
-            setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE)
+            setInteger(MediaFormat.KEY_BIT_RATE, if (internet) INTERNET_BIT_RATE else BIT_RATE)
+            setInteger(MediaFormat.KEY_FRAME_RATE, if (internet) INTERNET_FRAME_RATE else FRAME_RATE)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             // Repeat the last frame when nothing changes, so a still screen keeps flowing.
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 200_000L)
@@ -320,7 +327,7 @@ class ScreenShareService : Service() {
             handler,
         )
         Pairly.screenStarted(target, w, h)
-        Log.i(PhoneScreen.TAG, "sharing the screen at ${w}x$h")
+        Log.i(PhoneScreen.TAG, "sharing the screen at ${w}x$h${if (internet) " over the internet" else ""}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         ) {
@@ -413,12 +420,15 @@ class ScreenShareService : Service() {
         private const val EXTRA_DATA = "data"
         private const val ACTION_STOP = "dev.pairly.android.screen.STOP"
         private const val ONGOING_ID = 42
-        private const val MAX_SIDE = 1600
-        private const val BIT_RATE = 6_000_000
+        internal const val MAX_SIDE = 1600
+        internal const val BIT_RATE = 6_000_000
+        internal const val INTERNET_SIDE = 1280
+        internal const val INTERNET_BIT_RATE = 1_500_000
+        internal const val INTERNET_FRAME_RATE = 20
         private const val SOUND_RATE = 48_000
         /** 20 ms of 48 kHz 16-bit stereo. */
         private const val SOUND_PIECE = 3_840
-        private const val FRAME_RATE = 30
+        internal const val FRAME_RATE = 30
 
         fun start(context: Context, device: String, name: String, resultCode: Int, data: Intent) {
             context.startForegroundService(
@@ -434,9 +444,9 @@ class ScreenShareService : Service() {
             context.stopService(Intent(context, ScreenShareService::class.java))
         }
 
-        /** Fit the longer side within [MAX_SIDE], keeping the shape, with even sizes. */
-        fun scaled(width: Int, height: Int): Pair<Int, Int> {
-            val scale = minOf(1f, MAX_SIDE.toFloat() / maxOf(width, height))
+        /** Fit the longer side within [maxSide], keeping the shape, with even sizes. */
+        fun scaled(width: Int, height: Int, maxSide: Int = MAX_SIDE): Pair<Int, Int> {
+            val scale = minOf(1f, maxSide.toFloat() / maxOf(width, height))
             fun even(v: Float) = (v.toInt() / 2) * 2
             return even(width * scale) to even(height * scale)
         }

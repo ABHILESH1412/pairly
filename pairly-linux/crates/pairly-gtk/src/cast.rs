@@ -35,8 +35,16 @@ const AUDIO_RATE: u32 = 48_000;
 
 /// The video's longer side at most (phones decode 1080p easily).
 const MAX_WIDTH: u32 = 1920;
+/// Over the internet relay: smaller, so 1.5 Mbit/s still looks sharp.
+const INTERNET_WIDTH: u32 = 1280;
 
 static OUT: Mutex<()> = Mutex::new(());
+/// The viewer watches over the internet relay (`--internet`): a lighter stream.
+static INTERNET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn internet() -> bool {
+    INTERNET.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn send(kind: u8, payload: &[u8]) {
     let _guard = OUT.lock();
@@ -58,7 +66,8 @@ fn stop(reason: &str) -> ! {
     std::process::exit(0);
 }
 
-pub fn run(token_file: &str) {
+pub fn run(token_file: &str, over_internet: bool) {
+    INTERNET.store(over_internet, std::sync::atomic::Ordering::Relaxed);
     if let Err(e) = gstreamer::init() {
         stop(&format!("GStreamer: {e}"));
     }
@@ -207,9 +216,11 @@ struct Stream {
     size: (i32, i32),
 }
 
-/// The video size for a `w`×`h` screen: at most [`MAX_WIDTH`] wide, even sides.
+/// The video size for a `w`×`h` screen: at most [`MAX_WIDTH`] wide ([`INTERNET_WIDTH`] over
+/// the internet), even sides.
 fn video_size(w: u32, h: u32) -> (u32, u32) {
-    let scale = (f64::from(MAX_WIDTH) / f64::from(w.max(1))).min(1.0);
+    let max = if internet() { INTERNET_WIDTH } else { MAX_WIDTH };
+    let scale = (f64::from(max) / f64::from(w.max(1))).min(1.0);
     (
         ((f64::from(w) * scale) as u32 / 2) * 2,
         ((f64::from(h) * scale) as u32 / 2) * 2,
@@ -219,16 +230,21 @@ fn video_size(w: u32, h: u32) -> (u32, u32) {
 /// The pipeline's tail: scale, encode to H.264 and hand each frame to the appsink `out`.
 fn encode(w: u32, h: u32) -> String {
     // The GPU encoder if there is one, else software. 5 Mbit/s keeps text sharp at 1080p and
-    // fits ordinary Wi-Fi; a key frame every 2 s (or on request) lets the phone recover.
+    // fits ordinary Wi-Fi; over the internet 1.5 Mbit/s at 20 frames a second fits most
+    // mobile uploads. A key frame every 2 s (or on request) lets the viewer recover.
+    let (kbit, fps) = if internet() { (1500, 20) } else { (5000, 30) };
+    let keys = fps * 2;
     let encoder = if gstreamer::ElementFactory::find("vah264enc").is_some() {
-        "vah264enc rate-control=cbr bitrate=5000 key-int-max=60 b-frames=0"
+        format!("vah264enc rate-control=cbr bitrate={kbit} key-int-max={keys} b-frames=0")
     } else {
-        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=5000 key-int-max=60"
+        format!(
+            "x264enc tune=zerolatency speed-preset=ultrafast bitrate={kbit} key-int-max={keys}"
+        )
     };
     let (vw, vh) = video_size(w, h);
     format!(
         "videoconvert ! videoscale ! videorate \
-         ! video/x-raw,format=NV12,width={vw},height={vh},framerate=30/1 \
+         ! video/x-raw,format=NV12,width={vw},height={vh},framerate={fps}/1 \
          ! {encoder} ! h264parse config-interval=-1 \
          ! video/x-h264,stream-format=byte-stream,alignment=au \
          ! appsink name=out emit-signals=true sync=false max-buffers=4 drop=true"

@@ -1222,7 +1222,7 @@ impl Node {
 
     /// The laser pointer on a PC's screen: show it, move it by a fraction of the screen
     /// (`dx`, `dy`, from the gyroscope), hide it.
-    /// Ask a PC to show its screen here (`start`), or stop. Same Wi-Fi only.
+    /// Ask a PC to show its screen here (`start`), or stop. Same Wi-Fi or the relay.
     /// A folder's entries on another device (`""` is the top of what it shares): folders
     /// first, then by name.
     pub async fn files_list(
@@ -1283,6 +1283,11 @@ impl Node {
     /// Control the PC's screen being watched: taps, drags, scrolling, keys, text.
     pub fn screen_input(&self, device: String, input: ScreenInputData) -> Result<(), PairlyError> {
         Ok(self.screen.input(parse_id(&device)?, input.into())?)
+    }
+
+    /// Whether `device` watches through the internet relay: share a lighter stream then.
+    pub fn screen_over_internet(&self, device: String) -> Result<bool, PairlyError> {
+        Ok(self.screen.over_internet(parse_id(&device)?))
     }
 
     /// This phone's screen recording started (`width` × `height` pixels): tell the PC.

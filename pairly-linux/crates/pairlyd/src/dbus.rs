@@ -607,6 +607,10 @@ impl DaemonIface {
             )
         });
         let name = device.map_or_else(|| "Phone".to_owned(), |d| d.name);
+        if !pc {
+            // A phone plugged in with USB debugging shares without its prompt.
+            crate::adb::start_helpers().await;
+        }
         self.features
             .screen_host
             .open(peer, &name, pc)

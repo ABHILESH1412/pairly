@@ -187,6 +187,10 @@
             android:exported="false"
             android:theme="@style/Theme.Pairly" />
 
+        <receiver
+            android:name=".screen.ShellScreen$StopReceiver"
+            android:exported="false" />
+
         <service
             android:name=".screen.ScreenShareService"
             android:exported="false"

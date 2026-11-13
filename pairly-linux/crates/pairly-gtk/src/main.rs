@@ -44,7 +44,7 @@ fn main() {
     if let [flag, token_file, ..] = args.as_slice()
         && flag == "--cast"
     {
-        cast::run(token_file);
+        cast::run(token_file, args.iter().any(|a| a == "--internet"));
         return;
     }
     if let [flag, title, ..] = args.as_slice()

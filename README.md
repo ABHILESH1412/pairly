@@ -119,7 +119,10 @@ Pairly always uses the best link it has, and moves between them without losing a
 | 📶 **Bluetooth** | No shared network, devices close by (paired in Bluetooth settings first). | ⚡ slow, fine for messages |
 | 🌍 **Internet relay** | Anywhere else: mobile data, another Wi-Fi. | ⚡⚡ good |
 
-📺 **Screen sharing and the webcam need the same Wi-Fi**; everything else works over all three.
+📺 **Screen sharing works over Wi-Fi and the internet relay**, not Bluetooth (too slow for video).
+Over the internet it sends a lighter picture (720p, about 1.5 Mbit/s, roughly 700 MB an hour of
+mobile data) and mono sound, and it carries on when you switch between Wi-Fi and the relay.
+📷 **The webcam needs the same Wi-Fi.** Everything else works over all three.
 
 🏃 **Leaving Wi-Fi?** Pairly notices when your network changes and checks the connection at
 once, so it moves to the relay in a few seconds instead of waiting for the link to time out.

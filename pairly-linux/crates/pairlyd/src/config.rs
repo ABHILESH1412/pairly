@@ -25,7 +25,7 @@
 //! from_phone = true           # paired phones may lock, power off or restart this PC
 //!
 //! [screen]
-//! share_with_phones = true    # paired phones and PCs may view and control this screen (same Wi-Fi)
+//! share_with_phones = true    # paired phones and PCs may view and control this screen
 //!
 //! [bluetooth]
 //! enabled = true              # reach bonded devices over Bluetooth when there is no network
@@ -194,7 +194,7 @@ pub struct Config {
     pub input_backend: crate::input::BackendChoice,
     /// Paired devices may lock, power off or restart this PC.
     pub power_from_phone: bool,
-    /// Paired phones and PCs may view and control this PC's screen (same Wi-Fi only).
+    /// Paired phones and PCs may view and control this PC's screen (not over Bluetooth).
     pub screen_share: bool,
     /// The folder paired devices may browse, if any.
     pub files: crate::file_share::Sharing,

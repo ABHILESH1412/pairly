@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 #[derive(Debug, PartialEq)]
 enum Call {
     Show(String, String),
+    /// Shown without sound.
+    Quiet(String, String),
     Remove(String),
     Sync(Vec<String>),
     DismissLocal(String),
@@ -29,7 +31,12 @@ impl Recorder {
 
 impl NotificationHost for Recorder {
     fn show(&self, _: &PeerInfo, n: &Notification) {
-        self.call(Call::Show(n.id.clone(), n.text.clone()));
+        let (id, text) = (n.id.clone(), n.text.clone());
+        self.call(if n.silent {
+            Call::Quiet(id, text)
+        } else {
+            Call::Show(id, text)
+        });
     }
     fn remove(&self, _: &PeerInfo, id: &str) {
         self.call(Call::Remove(id.into()));
@@ -60,6 +67,16 @@ impl Side {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    /// The next call other than a resync's id list (a reconnect may resync more than once).
+    async fn next_shown(&mut self) -> Call {
+        loop {
+            match self.next().await {
+                Call::Sync(_) => {}
+                other => return other,
+            }
+        }
     }
 }
 
@@ -119,12 +136,13 @@ async fn notifications_flow_both_ways() {
     let mut phone = start(&net, "phone").await;
     let mut pc = start(&net, "pc").await;
 
-    // Already showing before the devices connect: sent on connect, then the full active list.
+    // Already showing before the devices connect: sent quietly on connect, then the full
+    // active list.
     phone.plugin.posted(note("old", "missed this"));
     pair(&phone, &pc).await;
     assert_eq!(
         pc.next().await,
-        Call::Show("old".into(), "missed this".into())
+        Call::Quiet("old".into(), "missed this".into())
     );
     assert_eq!(pc.next().await, Call::Sync(vec!["old".into()]));
     // The PC had nothing showing.
@@ -165,5 +183,52 @@ async fn notifications_flow_both_ways() {
     assert_eq!(
         phone.next().await,
         Call::Show("pc-1".into(), "build finished".into())
+    );
+}
+
+#[tokio::test]
+async fn a_reconnect_shows_nothing_twice() {
+    let net = MemoryNetwork::new();
+    let mut phone = start(&net, "phone").await;
+    let mut pc = start(&net, "pc").await;
+    pair(&phone, &pc).await;
+    assert_eq!(pc.next().await, Call::Sync(vec![]));
+    assert_eq!(phone.next().await, Call::Sync(vec![]));
+
+    phone.plugin.posted(note("a", "seen it"));
+    assert_eq!(pc.next().await, Call::Show("a".into(), "seen it".into()));
+
+    // The link drops (a switch between Wi-Fi, Bluetooth and the relay looks the same). While
+    // apart, a new notification arrives and the shown one changes.
+    let (mut events, mut phone_events) = (pc.node.subscribe(), phone.node.subscribe());
+    net.sever();
+    while !matches!(
+        phone_events.recv().await.unwrap(),
+        NodeEvent::Disconnected { .. }
+    ) {}
+    phone.plugin.posted(note("b", "while apart"));
+    while !matches!(events.recv().await.unwrap(), NodeEvent::Connected { .. }) {}
+
+    // Back together: only what's new or changed, and quietly. "a" isn't shown again.
+    assert_eq!(
+        pc.next().await,
+        Call::Quiet("b".into(), "while apart".into())
+    );
+    assert_eq!(pc.next().await, Call::Sync(vec!["a".into(), "b".into()]));
+
+    // Live ones ring again, and an update to a shown one is shown.
+    phone.plugin.posted(note("a", "changed"));
+    assert_eq!(
+        pc.next_shown().await,
+        Call::Show("a".into(), "changed".into())
+    );
+
+    // Removed at the source and posted again: new again.
+    phone.plugin.removed("a");
+    assert_eq!(pc.next_shown().await, Call::Remove("a".into()));
+    phone.plugin.posted(note("a", "changed"));
+    assert_eq!(
+        pc.next_shown().await,
+        Call::Show("a".into(), "changed".into())
     );
 }

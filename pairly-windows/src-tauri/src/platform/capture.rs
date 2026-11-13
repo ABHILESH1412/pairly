@@ -3,6 +3,7 @@
 //! (see [`output_size`]), has the pointer drawn in, and is encoded to H.264
 //! (OpenH264, tuned for screen content) at up to 30 frames a second. Nothing is sent while the
 //! screen doesn't change, apart from one picture a second so the phone knows it's still there.
+//! For a viewer on the internet relay the stream is lighter: 1280×720, 1.5 Mbit/s, 20 a second.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The video fits 1920×1080 (or 1080×1920 for an upright screen): see [`output_size`].
 const MAX_SIDE: u32 = 1920;
 const MAX_OTHER_SIDE: u32 = 1080;
+/// Over the internet relay: 1280×720, so 1.5 Mbit/s still looks sharp.
+const INTERNET_SIDE: u32 = 1280;
+const INTERNET_OTHER_SIDE: u32 = 720;
 
 pub enum Event {
     /// The video's size; returning false stops the recording.
@@ -49,11 +53,20 @@ impl Drop for Recording {
 /// past it) need a decoder level many phones lack, and they then show nothing at all. Both
 /// sides a multiple of 8, as H.264 decoders prefer.
 pub fn output_size(width: u32, height: u32) -> (u32, u32) {
+    fit(width, height, MAX_SIDE, MAX_OTHER_SIDE)
+}
+
+/// The video's size for a viewer on the internet relay: like [`output_size`], within 720p.
+pub fn internet_size(width: u32, height: u32) -> (u32, u32) {
+    fit(width, height, INTERNET_SIDE, INTERNET_OTHER_SIDE)
+}
+
+fn fit(width: u32, height: u32, side: u32, other_side: u32) -> (u32, u32) {
     let (width, height) = (width.max(8), height.max(8));
     let (max_w, max_h) = if width >= height {
-        (MAX_SIDE, MAX_OTHER_SIDE)
+        (side, other_side)
     } else {
-        (MAX_OTHER_SIDE, MAX_SIDE)
+        (other_side, side)
     };
     // The smaller of the two shrink ratios, never enlarging.
     let (w, h) = if u64::from(width) * u64::from(max_h) > u64::from(height) * u64::from(max_w) {
@@ -132,15 +145,17 @@ struct Encoder {
 }
 
 impl Encoder {
-    fn new(width: u32, height: u32) -> anyhow::Result<Self> {
+    /// `internet`: the lighter stream for a viewer on the relay.
+    fn new(width: u32, height: u32, internet: bool) -> anyhow::Result<Self> {
         use openh264::encoder::{
             BitRate, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode, UsageType,
         };
+        let (bps, fps) = if internet { (1_500_000, 20.0) } else { (6_000_000, 30.0) };
         let config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
-            .bitrate(BitRate::from_bps(6_000_000))
+            .bitrate(BitRate::from_bps(bps))
             .rate_control_mode(RateControlMode::Bitrate)
-            .max_frame_rate(FrameRate::from_hz(30.0))
+            .max_frame_rate(FrameRate::from_hz(fps))
             // A key frame every few seconds, so a lost picture doesn't linger.
             .intra_frame_period(IntraFramePeriod::from_num_frames(150))
             .skip_frames(false);
@@ -174,15 +189,16 @@ impl Encoder {
     }
 }
 
-/// Start recording the main screen; events go to `on_event` from the recording's own thread.
-pub fn start(on_event: OnEvent) -> anyhow::Result<Recording> {
+/// Start recording the main screen (`internet`: the lighter stream for a viewer on the relay);
+/// events go to `on_event` from the recording's own thread.
+pub fn start(internet: bool, on_event: OnEvent) -> anyhow::Result<Recording> {
     let stop = Arc::new(AtomicBool::new(false));
     let monitor = imp::main_monitor()?;
     let flag = stop.clone();
     std::thread::Builder::new()
         .name("pairly-cast".into())
         .spawn(move || {
-            let reason = match imp::record(&flag, &on_event) {
+            let reason = match imp::record(&flag, &on_event, internet) {
                 Ok(()) => "the screen sharing ended".to_owned(),
                 Err(e) => {
                     tracing::warn!(error = %e, "screen recording failed");
@@ -224,7 +240,7 @@ mod imp {
     };
     use windows::core::Interface;
 
-    use super::{Encoder, Event, OnEvent, draw_pointer, output_size, scale_bgra};
+    use super::{Encoder, Event, OnEvent, draw_pointer, internet_size, output_size, scale_bgra};
 
     /// The longest gap between pictures sent while the screen is still.
     const KEEP_ALIVE: Duration = Duration::from_secs(1);
@@ -236,6 +252,8 @@ mod imp {
     const KEY_EVERY_AT_START: Duration = Duration::from_millis(500);
     const START: Duration = Duration::from_secs(4);
     const FRAME_GAP: Duration = Duration::from_millis(33);
+    /// 20 frames a second over the internet relay.
+    const INTERNET_FRAME_GAP: Duration = Duration::from_millis(50);
     /// Screen copies without duplication: about 15 a second.
     const GDI_GAP: Duration = Duration::from_millis(66);
 
@@ -566,11 +584,16 @@ mod imp {
         }
     }
 
-    pub fn record(stop: &AtomicBool, on_event: &OnEvent) -> anyhow::Result<()> {
+    pub fn record(stop: &AtomicBool, on_event: &OnEvent, internet: bool) -> anyhow::Result<()> {
         let mut cap = Source::open()?;
         let (width, height) = cap.size();
-        let (ow, oh) = output_size(width, height);
-        let mut encoder = Encoder::new(ow, oh)?;
+        let (ow, oh) = if internet {
+            internet_size(width, height)
+        } else {
+            output_size(width, height)
+        };
+        let mut encoder = Encoder::new(ow, oh, internet)?;
+        let gap = if internet { INTERNET_FRAME_GAP } else { FRAME_GAP };
         if !on_event(Event::Started {
             width: ow,
             height: oh,
@@ -624,7 +647,7 @@ mod imp {
                     KEY_EVERY
                 };
             let due = fresh || moved || key_due || last_sent.elapsed() >= KEEP_ALIVE;
-            if !due || last_sent.elapsed() < FRAME_GAP {
+            if !due || last_sent.elapsed() < gap {
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
@@ -663,7 +686,7 @@ mod imp {
         anyhow::bail!("screen recording is built for Windows")
     }
 
-    pub fn record(_stop: &AtomicBool, _on_event: &OnEvent) -> anyhow::Result<()> {
+    pub fn record(_stop: &AtomicBool, _on_event: &OnEvent, _internet: bool) -> anyhow::Result<()> {
         anyhow::bail!("screen recording is built for Windows")
     }
 }
@@ -687,6 +710,14 @@ mod tests {
             assert!(ow % 8 == 0 && oh % 8 == 0 && ow <= 1920 && oh <= 1920);
             assert!(ow.max(oh) <= 1920 && ow.min(oh) <= 1080, "{w}x{h} -> {ow}x{oh}");
         }
+    }
+
+    #[test]
+    fn internet_sizes_fit_720p() {
+        assert_eq!(internet_size(1920, 1080), (1280, 720));
+        assert_eq!(internet_size(1920, 1200), (1152, 720));
+        assert_eq!(internet_size(1080, 1920), (720, 1280));
+        assert_eq!(internet_size(1024, 600), (1024, 600));
     }
 
     #[test]

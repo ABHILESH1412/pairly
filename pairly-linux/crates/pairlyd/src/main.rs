@@ -2,6 +2,7 @@
 //! with the Linux platform adapters and serves `io.github.abhilesh1412.Pairly.Daemon1` on the session bus.
 #![forbid(unsafe_code)]
 
+mod adb;
 mod battery;
 mod clipboard;
 mod commands;

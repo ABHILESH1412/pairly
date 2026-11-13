@@ -128,9 +128,13 @@ impl LinuxScreen {
         if self.casts().contains_key(&from.id) {
             return Ok(());
         }
-        let mut child = crate::desktop_env::command(crate::laser::gtk_binary())
-            .arg("--cast")
-            .arg(&sharing.token_file)
+        let over_internet = self.plugin().is_some_and(|p| p.over_internet(from.id));
+        let mut cast = crate::desktop_env::command(crate::laser::gtk_binary());
+        cast.arg("--cast").arg(&sharing.token_file);
+        if over_internet {
+            cast.arg("--internet");
+        }
+        let mut child = cast
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -149,7 +153,7 @@ impl LinuxScreen {
                 held: Vec::new(),
             },
         );
-        info!(device = %from.id, "sharing this PC's screen");
+        info!(device = %from.id, over_internet, "sharing this PC's screen");
         let this = Arc::downgrade(self);
         let peer = from.clone();
         std::thread::Builder::new()
@@ -420,7 +424,7 @@ impl LinuxScreen {
     /// and keyboard rather than touches) and ask it to share.
     pub fn open(self: &Arc<Self>, peer: DeviceId, name: &str, pc: bool) -> Result<(), String> {
         let plugin = self.plugin().ok_or("screen sharing isn't running")?;
-        // Ask first: it fails right away if the phone isn't on the same Wi-Fi.
+        // Ask first: it fails right away over Bluetooth.
         plugin
             .request(peer, ScreenAction::Start)
             .map_err(|e| e.to_string())?;

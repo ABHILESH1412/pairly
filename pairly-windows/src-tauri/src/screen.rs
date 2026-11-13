@@ -268,7 +268,9 @@ impl Screens {
         let weak = self.backend.clone();
         let peer = from.clone();
         let on_stop = Arc::new(AtomicBool::new(false));
-        let recording = capture::start(Box::new({
+        let internet = self.plugin().is_some_and(|p| p.over_internet(from.id));
+        tracing::info!(device = %from.id, internet, "sharing this PC's screen");
+        let recording = capture::start(internet, Box::new({
             let weak = weak.clone();
             let peer = peer.clone();
             move |event| {
