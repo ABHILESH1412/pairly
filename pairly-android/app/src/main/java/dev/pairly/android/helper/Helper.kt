@@ -1,11 +1,18 @@
 package dev.pairly.android.helper
 
+import android.annotation.SuppressLint
+import android.content.AttributionSource
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -17,6 +24,7 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
+import androidx.annotation.RequiresApi
 import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -56,6 +64,8 @@ object Helper {
         }
         // Some system services expect the process to have a main looper.
         runCatching { Looper.prepareMainLooper() }
+        // Here, on the main looper's thread: making it on another thread fails.
+        ShellContext.init()
         val server = try {
             ServerSocket(HelperProtocol.PORT, 1, InetAddress.getLoopbackAddress())
         } catch (e: Exception) {
@@ -97,6 +107,7 @@ object Helper {
 private class Session(socket: Socket) {
     private val wire = HelperProtocol.Wire(socket)
     private var recorder: Recorder? = null
+    private var sound: Sound? = null
     private val input = Executors.newSingleThreadExecutor()
 
     fun run() {
@@ -107,12 +118,14 @@ private class Session(socket: Socket) {
                 val b = ByteBuffer.wrap(body)
                 when (kind) {
                     HelperProtocol.START -> {
-                        recorder?.finish()
+                        stopRecording()
                         recorder = Recorder(wire, b.int, b.int, b.int).also { it.start() }
+                        sound = Sound(wire).also { it.start() }
                     }
-                    HelperProtocol.STOP -> {
-                        recorder?.finish()
-                        recorder = null
+                    HelperProtocol.STOP -> stopRecording()
+                    HelperProtocol.QUIT -> {
+                        close()
+                        exitProcess(0)
                     }
                     HelperProtocol.KEY_FRAME -> recorder?.keyFrame()
                     HelperProtocol.TAP -> { val (x, y) = b.float to b.float; input.execute { Input.stroke(listOf(x to y), 40) } }
@@ -133,11 +146,120 @@ private class Session(socket: Socket) {
         }
     }
 
-    fun close() {
+    private fun stopRecording() {
         recorder?.finish()
         recorder = null
+        sound?.finish()
+        sound = null
+    }
+
+    fun close() {
+        stopRecording()
         input.shutdownNow()
         wire.close()
+    }
+}
+
+/**
+ * A Context for system calls that want one, as the shell ("com.android.shell"): this process
+ * has no app of its own.
+ */
+private object ShellContext {
+    private const val PACKAGE = "com.android.shell"
+    private const val SHELL_UID = 2000
+
+    /** Null when it couldn't be made (no sound then). */
+    @Volatile
+    var context: Context? = null
+        private set
+
+    /** Make it, on the main thread (an ActivityThread makes a Handler for its looper). */
+    fun init() {
+        val current = runCatching {
+            Class.forName("android.app.ActivityThread").getDeclaredField("sCurrentActivityThread").apply { isAccessible = true }
+        }.getOrNull()
+        context = try {
+            val thread = Class.forName("android.app.ActivityThread")
+            val instance = thread.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+            current!!.set(null, instance)
+            thread.getDeclaredField("mSystemThread").apply { isAccessible = true }.setBoolean(instance, true)
+            Shell(thread.getDeclaredMethod("getSystemContext").invoke(instance) as Context)
+        } catch (e: Throwable) {
+            // Not a half-made one for the rest of the system calls to find.
+            runCatching { current?.set(null, null) }
+            System.err.println("pairly-helper: no shell context: ${e.cause ?: e}")
+            null
+        }
+    }
+
+    private class Shell(base: Context) : ContextWrapper(base) {
+        override fun getPackageName() = PACKAGE
+        override fun getOpPackageName() = PACKAGE
+        override fun getApplicationContext(): Context = this
+
+        @RequiresApi(Build.VERSION_CODES.S)
+        override fun getAttributionSource(): AttributionSource =
+            AttributionSource.Builder(SHELL_UID).setPackageName(PACKAGE).build()
+    }
+}
+
+/**
+ * The phone's sound, as it plays (what goes to the speaker: the phone itself goes quiet while
+ * it's shared, as with scrcpy). Android 12+; silent before.
+ */
+private class Sound(private val wire: HelperProtocol.Wire) : Thread("pairly-sound") {
+    @Volatile
+    private var running = true
+
+    fun finish() {
+        running = false
+        join(1_000)
+    }
+
+    // The shell user may record the phone's sound, from the system-only output source; the
+    // app's own permissions don't apply here.
+    @SuppressLint("MissingPermission", "WrongConstant")
+    override fun run() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val context = ShellContext.context ?: return
+        val record = try {
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(RATE)
+                .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                .build()
+            val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+            AudioRecord.Builder()
+                .setContext(context)
+                .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(maxOf(min, PIECE * 8))
+                .build()
+        } catch (e: Exception) {
+            System.err.println("pairly-helper: no sound: ${e.cause ?: e}")
+            return
+        }
+        try {
+            record.startRecording()
+            val piece = ByteArray(PIECE)
+            val head = ByteBuffer.allocate(5).putInt(RATE).put(2).array()
+            while (running) {
+                val n = record.read(piece, 0, PIECE)
+                if (n <= 0) continue
+                wire.send(HelperProtocol.AUDIO, head + piece.copyOf(n))
+            }
+        } catch (e: Exception) {
+            System.err.println("pairly-helper: sound stopped: $e")
+        } finally {
+            runCatching { record.stop() }
+            record.release()
+        }
+    }
+
+    private companion object {
+        const val RATE = 48_000
+        /** 20 ms of 48 kHz 16-bit stereo. */
+        const val PIECE = 3_840
     }
 }
 
@@ -186,13 +308,34 @@ private class Recorder(
         runCatching { codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) }) }
     }
 
+    /** Android's own encoder instead of the phone's hardware one (busy, or failed). */
+    private var software = false
+
     override fun run() {
-        try {
-            while (running) record()
-        } catch (e: Exception) {
-            System.err.println("pairly-helper: recording failed: $e")
-            runCatching { wire.send(HelperProtocol.STOPPED, "the screen recording failed: $e".toByteArray()) }
+        while (running) {
+            try {
+                record()
+            } catch (e: IllegalStateException) {
+                // The hardware encoder can refuse while another app uses it (a video playing):
+                // the software one is slower but always there.
+                if (software || !running) return failed(e)
+                System.err.println("pairly-helper: the hardware encoder failed ($e), using the software one")
+                software = true
+            } catch (e: Exception) {
+                return failed(e)
+            }
         }
+    }
+
+    private fun failed(e: Exception) {
+        System.err.println("pairly-helper: recording failed: $e")
+        runCatching { wire.send(HelperProtocol.STOPPED, "the screen recording failed: $e".toByteArray()) }
+    }
+
+    private fun encoder(): MediaCodec {
+        if (!software) return MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        return runCatching { MediaCodec.createByCodecName("c2.android.avc.encoder") }
+            .getOrElse { MediaCodec.createByCodecName("OMX.google.h264.encoder") }
     }
 
     /** Record until stopped or the screen's size changes. */
@@ -209,12 +352,27 @@ private class Recorder(
             // Repeat the last picture when nothing changes, so a still screen keeps flowing.
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000L)
         }
-        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        val encoder = encoder()
         codec = encoder
-        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        val surface = encoder.createInputSurface()
-        encoder.start()
-        val release = Mirror.create(surface, dw, dh, w, h)
+        val surface: Surface
+        try {
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            surface = encoder.createInputSurface()
+            encoder.start()
+        } catch (e: Exception) {
+            encoder.release()
+            codec = null
+            throw e
+        }
+        val release = try {
+            Mirror.create(surface, dw, dh, w, h)
+        } catch (e: Exception) {
+            runCatching { encoder.stop() }
+            encoder.release()
+            surface.release()
+            codec = null
+            throw e
+        }
         try {
             wire.send(HelperProtocol.STARTED, ByteBuffer.allocate(8).putInt(w).putInt(h).array())
             val info = MediaCodec.BufferInfo()

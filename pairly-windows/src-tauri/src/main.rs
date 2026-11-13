@@ -357,6 +357,10 @@ async fn screen_open(backend: Backends<'_>, id: String) -> Answer {
     let peer = backend::parse(&id).map_err(text)?;
     let name = backend.device_name(peer);
     let pc = backend.is_pc(peer);
+    if !pc {
+        // A phone plugged in with USB debugging shares without its prompt.
+        pairly_plugins::screen_helper::start_helpers(screen::Screens::adb_command).await;
+    }
     backend.screens.open_viewer(peer, &name, pc).map_err(text)
 }
 

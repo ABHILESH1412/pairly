@@ -20,7 +20,7 @@ tracing.workspace = true
 serde_bytes.workspace = true
 rand.workspace = true
 ring.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "process"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }

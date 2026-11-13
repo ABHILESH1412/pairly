@@ -54,8 +54,17 @@ class PhoneScreen(context: Context) : ScreenHandler {
         if (sharing != null && sharing != deviceId) {
             throw PairlyException.Failed("the screen is already shared with another device")
         }
-        // The screen helper (started over adb) shares without asking.
-        if (ScreenShareService.device == null && ShellScreen.start(context, deviceId, deviceName)) return
+        // The screen helper (started over adb) shares without asking; starting it may take a
+        // few seconds, so not on the caller's thread.
+        kotlin.concurrent.thread(name = "pairly-share-start") {
+            if (ScreenShareService.device == null && ShellScreen.start(context, deviceId, deviceName)) return@thread
+            runCatching { askToShare(deviceId, deviceName) }
+                .onFailure { Pairly.screenStopped(deviceId, it.message ?: it.javaClass.simpleName) }
+        }
+    }
+
+    /** Android's "Start recording?" way: on the screen, or through a notification. */
+    private fun askToShare(deviceId: String, deviceName: String) {
         val consent = Intent(context, ScreenConsentActivity::class.java)
             .putExtra(EXTRA_DEVICE, deviceId)
             .putExtra(EXTRA_NAME, deviceName)

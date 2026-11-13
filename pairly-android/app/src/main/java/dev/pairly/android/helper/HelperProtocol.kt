@@ -11,7 +11,7 @@ import java.net.Socket
  */
 object HelperProtocol {
     /** Bumped when the messages change: the app ignores a helper that speaks another one. */
-    const val VERSION = 1
+    const val VERSION = 2
     const val PORT = 47188
     private const val MAX_MESSAGE = 4 * 1024 * 1024
 
@@ -24,6 +24,8 @@ object HelperProtocol {
     const val FRAME = 3
     /** `[reason UTF-8]`. */
     const val STOPPED = 4
+    /** `[rate u32][channels u8][16-bit little-endian samples]`: the phone's sound. */
+    const val AUDIO = 5
 
     // App → helper.
     /** `[longest side u32][bits per second u32][frames per second u32]`. */
@@ -31,6 +33,8 @@ object HelperProtocol {
     const val STOP = 11
     /** The link fell behind: send a key frame now. */
     const val KEY_FRAME = 12
+    /** Exit (a newer Pairly found this helper outdated). */
+    const val QUIT = 13
     /** `[x f32][y f32]`, fractions of the screen. */
     const val TAP = 20
     const val LONG_PRESS = 21

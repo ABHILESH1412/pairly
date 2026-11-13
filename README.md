@@ -59,6 +59,8 @@ clipboard, media, screens and remote control, all end-to-end encrypted.
 - **PC to PC:** see and control your other computer (Linux ↔ Windows).
 - 🔊 **With sound:** you hear what plays on the shared screen (on Android 10 or newer, apps
   that forbid recording stay silent).
+- 🚀 **No "Start recording?" prompt, real touches:** set up once (below) and the phone shares
+  its screen straight away, with faster, more precise control and the phone's sound.
 - 🎮 **Control mode (PC to PC):** press the ⌨ button, or go full screen, and *everything* goes
   to the other PC: the Windows/Super key, Alt+Tab, shortcuts, and touchpad swipes for switching
   desktops. Press **Ctrl+Alt** on their own and let go to get your keys back (Ctrl+Alt+anything
@@ -265,7 +267,32 @@ sudo ufw allow 47100/udp && sudo ufw allow 5353/udp
 | 💬 SMS, 📞 phone, 👥 contacts | Texts, calls and contacts on the PC |
 | 📁 All files access | Letting the PC browse the phone's storage |
 | ♿ Accessibility service | Locking the phone, typing from the PC, automatic clipboard |
-| 📺 Screen capture | Showing the phone's screen on the PC (asked each time) |
+| 📺 Screen capture | Showing the phone's screen on the PC (asked each time, unless the screen helper below is set up) |
+
+### 🚀 Share the phone's screen without the prompt
+
+Like [scrcpy](https://github.com/Genymobile/scrcpy), Pairly can run a small **screen helper** on
+the phone with Android's debugging rights: it records the screen without asking each time, taps
+and types like a real finger and keyboard (no accessibility service needed), and sends the
+phone's sound (Android 12+; the phone itself goes quiet while it's shared, as with scrcpy).
+No other app (Shizuku or similar) is needed. Turn on **Developer options** first
+(Settings → About phone → tap *Build number* seven times), then either:
+
+- **🔌 With a cable:** turn on *USB debugging*, plug the phone into the PC (with `adb`
+  installed) and open the phone's screen from the PC. The PC starts the helper.
+- **📶 Without a PC (wireless debugging):** in Pairly, *Settings → Share the screen without
+  asking*. Developer options opens: tap *Wireless debugging → Pair device with pairing code*
+  and type the six-digit code into Pairly's notification. Done once.
+
+The helper keeps running until the phone restarts. After a restart, Pairly starts it again by
+itself the next time a PC asks for the screen: it switches wireless debugging on for a few
+seconds and off again. That needs Wi-Fi; on a network Android hasn't seen before it asks
+*"Allow wireless debugging on this network?"* (tick *Always allow on this network*). If the
+helper can't start, Pairly falls back to the usual prompt.
+
+> Starting the helper also grants Pairly the "write secure settings" permission, which it uses
+> only to switch wireless debugging on and off for that. The helper serves only Pairly: it
+> listens on the phone itself and refuses any other app.
 
 ---
 

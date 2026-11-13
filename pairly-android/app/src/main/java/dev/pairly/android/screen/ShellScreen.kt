@@ -1,13 +1,17 @@
 package dev.pairly.android.screen
 
+import android.Manifest
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import dev.pairly.android.Notifications
 import dev.pairly.android.Pairly
 import dev.pairly.android.R
@@ -37,9 +41,13 @@ object ShellScreen {
     @Volatile
     private var wire: HelperProtocol.Wire? = null
 
-    /** Share with `deviceId` through the helper; false when it isn't running. */
+    /**
+     * Share with `deviceId` through the helper; false when it isn't running and can't be
+     * started (through wireless debugging, if Pairly is paired with it). Blocks a few seconds
+     * when it starts the helper.
+     */
     fun start(context: Context, deviceId: String, deviceName: String): Boolean {
-        val wire = connect() ?: return false
+        val wire = connect() ?: startAndConnect(context) ?: return false
         val internet = Pairly.screenOverInternet(deviceId)
         val (side, bits, fps) = if (internet) {
             Triple(ScreenShareService.INTERNET_SIDE, ScreenShareService.INTERNET_BIT_RATE, ScreenShareService.INTERNET_FRAME_RATE)
@@ -70,6 +78,10 @@ object ShellScreen {
                     val flags = body[0].toInt()
                     val behind = Pairly.screenFrame(deviceId, body.copyOfRange(1, body.size), flags and 1 != 0, flags and 2 != 0)
                     if (behind) runCatching { wire.send(HelperProtocol.KEY_FRAME) }
+                }
+                HelperProtocol.AUDIO -> if (body.size > 5) {
+                    val b = ByteBuffer.wrap(body)
+                    Pairly.screenAudio(deviceId, b.int, b.get().toInt(), body.copyOfRange(5, body.size))
                 }
                 HelperProtocol.STOPPED -> {
                     reason = String(body, Charsets.UTF_8)
@@ -145,6 +157,16 @@ object ShellScreen {
         ScreenKeyData.DOWN -> KeyEvent.KEYCODE_DPAD_DOWN
     }
 
+    /** Start the helper through wireless debugging and wait for it to listen. */
+    private fun startAndConnect(context: Context): HelperProtocol.Wire? {
+        if (!WirelessDebugging.startHelper(context)) return null
+        repeat(40) {
+            connect()?.let { return it }
+            Thread.sleep(200)
+        }
+        return null
+    }
+
     /** The helper, if it runs and speaks our version. */
     private fun connect(): HelperProtocol.Wire? = runCatching {
         val socket = Socket()
@@ -153,7 +175,9 @@ object ShellScreen {
         val wire = HelperProtocol.Wire(socket)
         val (kind, body) = wire.read() ?: return@runCatching null
         if (kind != HelperProtocol.HELLO || ByteBuffer.wrap(body).int != HelperProtocol.VERSION) {
-            Log.w(PhoneScreen.TAG, "the screen helper is from another Pairly version: restart it")
+            // From another Pairly: ask it to quit, so the next start runs this one's helper.
+            Log.w(PhoneScreen.TAG, "the screen helper is from another Pairly version: not using it")
+            runCatching { wire.send(HelperProtocol.QUIT) }
             wire.close()
             return@runCatching null
         }
@@ -175,7 +199,9 @@ object ShellScreen {
             .setOngoing(true)
             .addAction(0, context.getString(R.string.screen_stop), stop)
             .build()
-        runCatching { NotificationManagerCompat.from(context).notify(ONGOING_ID, notification) }
+        val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (allowed) NotificationManagerCompat.from(context).notify(ONGOING_ID, notification)
     }
 
     /** The notification's Stop. */

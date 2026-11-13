@@ -6,6 +6,7 @@
 //! All async work runs on a private Tokio runtime, so Kotlin can call from any coroutine
 //! dispatcher.
 
+mod adb;
 mod bluetooth;
 mod media;
 mod phone;

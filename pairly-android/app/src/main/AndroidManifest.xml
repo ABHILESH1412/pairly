@@ -19,6 +19,11 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Scanning pairing QR codes. -->
+    <!-- Granted by the screen helper (as the shell user), never by the app: lets Pairly switch
+         wireless debugging on to restart the helper after the phone restarts. -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Bluetooth: reach bonded PCs without a network. -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
@@ -189,6 +194,10 @@
 
         <receiver
             android:name=".screen.ShellScreen$StopReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".screen.WirelessDebugging$CodeReceiver"
             android:exported="false" />
 
         <service

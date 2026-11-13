@@ -184,6 +184,23 @@ impl Screens {
         Ok(())
     }
 
+    /// `adb`, to start the phone screen helper over USB debugging (see
+    /// [`pairly_plugins::screen_helper`]): the Android SDK's if it's installed, else the one on
+    /// the PATH. Never with a console window.
+    pub fn adb_command() -> tokio::process::Command {
+        let sdk = std::env::var_os("LOCALAPPDATA")
+            .map(|d| std::path::PathBuf::from(d).join(r"Android\Sdk\platform-tools\adb.exe"))
+            .filter(|p| p.exists());
+        #[allow(unused_mut)] // creation flags exist only on Windows
+        let mut cmd = tokio::process::Command::new(sdk.unwrap_or_else(|| "adb".into()));
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd
+    }
+
     /// The viewer window is ready for video: ask the phone to share.
     pub fn watch(
         &self,

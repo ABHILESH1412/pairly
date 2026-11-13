@@ -1232,6 +1232,7 @@ name = "pairly-ffi"
 version = "0.2.2"
 dependencies = [
  "async-trait",
+ "curve25519-dalek",
  "pairly-core",
  "pairly-crypto",
  "pairly-plugins",
@@ -1239,6 +1240,9 @@ dependencies = [
  "pairly-transport-lan",
  "pairly-transport-relay",
  "paranoid-android",
+ "rcgen",
+ "ring",
+ "rustls",
  "serde",
  "serde_bytes",
  "thiserror",

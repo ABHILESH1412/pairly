@@ -4,28 +4,28 @@
 //! link (Wi-Fi or the internet relay), until the phone restarts.
 //!
 //! Optional: without `adb`, or with no phone authorised for USB debugging, nothing happens and
-//! the phone asks as usual.
+//! the phone asks as usual. Each PC app says how to run `adb` (through a Flatpak sandbox, with
+//! no console window on Windows).
 
 use std::time::Duration;
 
+use tokio::process::Command;
 use tracing::{debug, info};
-
-use crate::sandbox::host_tokio_command;
 
 const PACKAGES: [&str; 2] = [
     "io.github.abhilesh1412.pairly",
     "io.github.abhilesh1412.pairly.dev",
 ];
 const HELPER: &str = "dev.pairly.android.helper.Helper";
+/// Stops a helper already running (maybe an older one). Not `pkill -f`: that matches the shell
+/// running this very command (its command line names the helper too) and kills it first.
+const STOP_HELPER: &str = r#"for p in $(pidof app_process); do case "$(tr "\0" " " < /proc/$p/cmdline)" in *dev.pairly.android.helper.Helper*) kill $p;; esac; done;"#;
 /// Every adb call is quick; a stuck one (a phone asking to authorise) mustn't hold things up.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `adb <args>`'s output, or None if adb is missing, fails or takes too long.
-async fn adb(args: &[&str]) -> Option<String> {
-    let run = host_tokio_command("adb")
-        .args(args)
-        .kill_on_drop(true)
-        .output();
+async fn adb(command: &(dyn Fn() -> Command + Sync), args: &[&str]) -> Option<String> {
+    let run = command().args(args).kill_on_drop(true).output();
     let out = tokio::time::timeout(TIMEOUT, run).await.ok()?.ok()?;
     out.status
         .success()
@@ -58,25 +58,30 @@ fn pairly_uids(list: &str) -> Option<(&'static str, String)> {
     })
 }
 
-/// Start the helper on every plugged-in phone that has Pairly (it exits right away where it
-/// already runs). Returns how many were started.
-pub async fn start_helpers() -> usize {
-    let Some(list) = adb(&["devices"]).await else {
+/// Start the helper on every plugged-in phone that has Pairly, replacing one already running
+/// there (it may be from an older Pairly). `command` makes an `adb` command. Returns how many
+/// started.
+pub async fn start_helpers(command: impl Fn() -> Command + Sync) -> usize {
+    let command: &(dyn Fn() -> Command + Sync) = &command;
+    let Some(list) = adb(command, &["devices"]).await else {
         return 0; // no adb
     };
     let mut started = 0;
     for serial in ready_devices(&list) {
         let s = serial.as_str();
-        let Some(packages) = adb(&[
-            "-s",
-            s,
-            "shell",
-            "pm",
-            "list",
-            "packages",
-            "-U",
-            "io.github.abhilesh1412.pairly",
-        ])
+        let Some(packages) = adb(
+            command,
+            &[
+                "-s",
+                s,
+                "shell",
+                "pm",
+                "list",
+                "packages",
+                "-U",
+                "io.github.abhilesh1412.pairly",
+            ],
+        )
         .await
         else {
             continue;
@@ -85,7 +90,7 @@ pub async fn start_helpers() -> usize {
             debug!(serial = s, "no Pairly on this phone");
             continue;
         };
-        let Some(path) = adb(&["-s", s, "shell", "pm", "path", package]).await else {
+        let Some(path) = adb(command, &["-s", s, "shell", "pm", "path", package]).await else {
             continue;
         };
         let Some(apk) = path
@@ -97,9 +102,11 @@ pub async fn start_helpers() -> usize {
         };
         // Detached (setsid), so it keeps running after the cable comes out.
         let script = format!(
-            "CLASSPATH={apk} setsid app_process / {HELPER} --uid {uids} </dev/null >/dev/null 2>&1 &"
+            "pm grant {package} android.permission.WRITE_SECURE_SETTINGS; \
+             {STOP_HELPER} sleep 0.3; \
+             CLASSPATH={apk} setsid app_process / {HELPER} --uid {uids} </dev/null >/dev/null 2>&1 &"
         );
-        if adb(&["-s", s, "shell", &script]).await.is_some() {
+        if adb(command, &["-s", s, "shell", &script]).await.is_some() {
             info!(
                 serial = s,
                 package, "started the screen helper on the phone"

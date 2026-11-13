@@ -21,6 +21,10 @@ pairly-plugins.workspace = true
 pairly-transport-lan.workspace = true
 pairly-transport-relay.workspace = true
 async-trait.workspace = true
+curve25519-dalek.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+rustls.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true

@@ -175,6 +175,13 @@ fun SettingsScreen(onBack: () -> Unit, onChooseApps: () -> Unit) {
                             })
                         },
                     )
+                    val helperReady = remember { dev.pairly.android.screen.WirelessDebugging.paired(context) }
+                    SettingsRow(
+                        title = stringResource(R.string.helper_setting),
+                        body = stringResource(if (helperReady) R.string.helper_setting_ready else R.string.helper_setting_off),
+                        trailing = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
+                        onClick = { dev.pairly.android.screen.WirelessDebugging.startPairing(context) },
+                    )
                     SettingsRow(
                         title = stringResource(R.string.settings_notification_apps),
                         body = stringResource(R.string.settings_notification_apps_body),
