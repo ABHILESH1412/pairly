@@ -46,6 +46,16 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.0.0" date="2026-11-17">
+      <description>
+        <ul>
+          <li>Relay test: wait for both sides to connect before dropping the LAN</li>
+          <li>Screen helper: phone sound, start it from Windows, and from the phone itself over wireless debugging</li>
+          <li>Screen helper: share the phone's screen without the prompt and with real input when started over adb</li>
+          <li>[fix] webcame feature is working now</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-10-22">
       <description>
         <ul>
