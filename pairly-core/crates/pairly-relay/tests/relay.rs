@@ -162,7 +162,9 @@ async fn pair(a: &mut Side, b: &mut Side) {
             }
         }
     }
+    // Both sides: a test that drops the LAN right away must not beat `b`'s end of the session.
     assert_eq!(a.connected(b_id).await, TransportKind::Memory);
+    assert_eq!(b.connected(a_id).await, TransportKind::Memory);
 }
 
 /// `TEST_LOG=debug cargo test -p pairly-relay` shows what the nodes do.
